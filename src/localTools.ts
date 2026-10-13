@@ -1,0 +1,126 @@
+/**
+ * 本地工具：由 App 自己执行（不走容器），模型通过 function calling 调用。
+ * 目前包含：记忆读写、技能、例程。
+ */
+import * as store from './store';
+import { getActiveAgent } from './context';
+
+export type LocalResult = { ok: boolean; stdout?: string; stderr?: string; data?: any };
+
+type Handler = (args: any) => Promise<LocalResult>;
+
+const str = (v: any, fallback = '') => (v === undefined || v === null ? fallback : String(v));
+
+export const LOCAL_HANDLERS: Record<string, Handler> = {
+  memory_write: async (args) => {
+    const content = str(args.content).trim();
+    if (!content) return { ok: false, stderr: '缺少 content' };
+    const prov = (['user', 'agent', 'untrusted'] as const).includes(args.provenance)
+      ? args.provenance
+      : 'agent';
+    const m = await store.addMemory(content, prov, getActiveAgent());
+    return { ok: true, stdout: `已记住（来源 ${m.provenance}）：${m.content}`, data: m };
+  },
+
+  memory_recall: async (args) => {
+    const query = args.query ? str(args.query) : undefined;
+    const items = await store.recallMemories(query, 12, getActiveAgent());
+    if (!items.length) return { ok: true, stdout: '（没有相关记忆）', data: [] };
+    return {
+      ok: true,
+      stdout: items.map((m) => `- [${m.provenance}] ${m.content}`).join('\n'),
+      data: items,
+    };
+  },
+
+  memory_forget: async (args) => {
+    const key = str(args.content).trim();
+    const items = await store.listMemories(getActiveAgent());
+    const hit = items.find((m) => m.content.includes(key));
+    if (!hit) return { ok: false, stderr: '没找到匹配的记忆' };
+    await store.removeMemory(hit.id);
+    return { ok: true, stdout: `已删除：${hit.content}` };
+  },
+
+  skill_upsert: async (args) => {
+    const name = str(args.name).trim();
+    if (!name) return { ok: false, stderr: '缺少 name' };
+    const s = await store.upsertSkill({
+      agentId: getActiveAgent(),
+      name,
+      description: str(args.description),
+      content: str(args.content),
+      provenance: 'agent',
+    });
+    return {
+      ok: true,
+      stdout: `技能已保存（默认暂停，等用户启用）：${s.name}。请在「资料」面板里确认。`,
+      data: s,
+    };
+  },
+
+  skill_list: async () => {
+    const items = await store.listSkills(getActiveAgent());
+    if (!items.length) return { ok: true, stdout: '（暂无技能）', data: [] };
+    return {
+      ok: true,
+      stdout: items
+        .map((s) => `- ${s.name}${s.enabled ? '' : '（已暂停）'}：${s.description || '无描述'}`)
+        .join('\n'),
+      data: items,
+    };
+  },
+
+  remind_in: async (args) => {
+    const minutes = Number(args.minutes);
+    const text = str(args.text).trim();
+    if (!Number.isFinite(minutes) || minutes <= 0) {
+      return { ok: false, stderr: 'minutes 必须是正数' };
+    }
+    const ms = Math.round(minutes * 60_000);
+    const r = await store.upsertRoutine({
+      agentId: getActiveAgent(),
+      name: text || `${minutes} 分钟后提醒`,
+      description: text,
+      schedule: `once:${ms}`,
+      enabled: true, // 用户明确要求的一次性提醒，直接生效
+      once: true,
+      provenance: 'user',
+    });
+    const at = new Date(r.createdAt + ms).toLocaleTimeString();
+    return {
+      ok: true,
+      stdout: `已设定一次性提醒：${at}（约 ${minutes} 分钟后）—— ${text}`,
+      data: r,
+    };
+  },
+
+  routine_upsert: async (args) => {
+    const name = str(args.name).trim();
+    if (!name) return { ok: false, stderr: '缺少 name' };
+    const r = await store.upsertRoutine({
+      agentId: getActiveAgent(),
+      name,
+      description: str(args.description),
+      schedule: str(args.schedule),
+      provenance: 'agent',
+    });
+    return {
+      ok: true,
+      stdout: `周期例程已保存（默认暂停，等用户启用）：${r.name}，时间设定「${r.schedule || '未指定'}」。定时触发已可用（前台心跳每 30 秒检查一次）。`,
+      data: r,
+    };
+  },
+
+  routine_list: async () => {
+    const items = await store.listRoutines(getActiveAgent());
+    if (!items.length) return { ok: true, stdout: '（暂无例程）', data: [] };
+    return {
+      ok: true,
+      stdout: items
+        .map((r) => `- ${r.name}${r.enabled ? '' : '（已暂停）'} @ ${r.schedule || '未指定'}`)
+        .join('\n'),
+      data: items,
+    };
+  },
+};
