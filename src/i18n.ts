@@ -132,6 +132,8 @@ const dict = {
   'room.done': { zh: '完成', en: 'Done' },
   'room.joined': { zh: '已加入', en: 'joined' },
   'room.notjoined': { zh: '未加入', en: 'not joined' },
+  'agents.ownKey': { zh: '专属 Key', en: 'own key' },
+  'agents.globalKey': { zh: '用全局 Key', en: 'global key' },
   'agents.ungrouped': { zh: '未分组', en: 'Ungrouped' },
   'review.verdict': { zh: '自动复核：{v}（{why}）', en: 'Auto-review: {v} ({why})' },
   'review.failed': { zh: '自动复核失败，改为询问你：{e}', en: 'Auto-review failed, asking you: {e}' },

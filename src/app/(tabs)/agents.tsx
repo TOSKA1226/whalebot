@@ -6,7 +6,7 @@ import { useApp } from '../../app-state';
 import { Btn, Dot, Header, Row, SectionTitle } from '../../ui';
 
 export default function AgentsTab() {
-  const { t, agents, activeAgentId, saveAgent, presenceOf } = useApp();
+  const { t, agents, activeAgentId, saveAgent, presenceOf, agentHasKey, cfg } = useApp();
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState({ name: '', group: '', description: '', persona: '' });
 
@@ -31,7 +31,9 @@ export default function AgentsTab() {
                   key={a.id}
                   left={<Dot state={presenceOf(a.id)} />}
                   title={`${a.name}${a.id === activeAgentId ? ` · ${t('agents.active')}` : ''}`}
-                  desc={a.description || a.persona.slice(0, 60) || '—'}
+                  desc={`${a.model?.trim() || cfg.model} · ${
+                    agentHasKey[a.id] ? t('agents.ownKey') : t('agents.globalKey')
+                  }${a.description ? ` · ${a.description}` : ''}`}
                   right={
                     <Text style={{ fontSize: 11, color: '#8e8e93' }}>
                       {t(`presence.${presenceOf(a.id)}` as 'presence.online')}
