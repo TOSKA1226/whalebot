@@ -133,6 +133,7 @@ function Field({
         autoCorrect={false}
         secureTextEntry={secure}
         placeholder={hint}
+        placeholderTextColor="#9a9a9e"
       />
     </View>
   );
@@ -148,6 +149,7 @@ const s = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 15,
+    color: '#111',
   },
   langRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
   hint2: { fontSize: 11, color: '#aaa', marginBottom: 8 },

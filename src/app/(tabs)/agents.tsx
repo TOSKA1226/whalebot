@@ -117,6 +117,7 @@ export function Field({
         onChangeText={onChange}
         multiline={multiline}
         placeholder={hint}
+        placeholderTextColor="#9a9a9e"
         autoCapitalize="none"
         autoCorrect={false}
       />
@@ -134,6 +135,7 @@ const s = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 15,
+    color: '#111',
   },
   hint: { fontSize: 12, color: '#999', marginTop: 12, lineHeight: 18 },
   hint2: { fontSize: 11, color: '#aaa', marginTop: 4 },
