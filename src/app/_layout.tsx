@@ -1,5 +1,5 @@
 import * as NavBar from 'expo-navigation-bar';
-import { KeyboardProvider } from 'react-native-keyboard-controller';
+import { KeyboardProvider } from '../kav';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect } from 'react';
