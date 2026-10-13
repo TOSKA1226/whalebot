@@ -18,8 +18,15 @@ import { initialHistory, runAgent, type AgentEvent } from './agent';
 import { makeT, type TFn } from './i18n';
 import * as store from './store';
 import { setActiveAgent as setToolAgent } from './context';
-import { startScheduler } from './scheduler';
-import { notifyNow, onNotificationResponse, setupNotifications } from './notify';
+import { nextDue, startScheduler } from './scheduler';
+import {
+  cancelAllScheduled,
+  cancelScheduled,
+  notifyNow,
+  onNotificationResponse,
+  scheduleAt,
+  setupNotifications,
+} from './notify';
 
 export type Bubble = {
   id: string;
@@ -48,6 +55,8 @@ type AppState = {
   activeAgentId: string;
   activeAgent?: store.Agent;
   switchAgent: (id: string) => Promise<void>;
+  /** 把例程的下次触发预约到系统通知 */
+  syncScheduled: () => Promise<void>;
   /** 房间：参与者（含主答） */
   roomAgents: store.Agent[];
   setRoomMembers: (ids: string[]) => Promise<void>;
@@ -180,6 +189,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  /** 把所有启用例程的下次触发时间预约到系统通知里（App 不在前台也能弹） */
+  const syncScheduled = useCallback(async () => {
+    await cancelAllScheduled();
+    const all = await store.listRoutines();
+    for (const r of all) {
+      if (!r.enabled) continue;
+      const due = nextDue(r);
+      if (!due) continue;
+      await scheduleAt(
+        due,
+        `${r.name}`,
+        r.description || r.schedule || '',
+        `routine-${r.id}`,
+      );
+    }
+  }, []);
+
   const reloadData = useCallback(async () => {
     const aid = agentRef.current;
     const [memories, skills, routines] = await Promise.all([
@@ -223,6 +249,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const mentioned = Array.from(userText.matchAll(/@([^\s@，,。.！!？?、]+)/g)).map(
         (m) => m[1],
       );
+      await syncScheduled();
       if (mentioned.length && !opts.agentId) {
         const mainId = agentRef.current;
         for (const name of mentioned) {
@@ -258,7 +285,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       return lastTextRef.current;
     },
-    [approve, onEvent, push, reloadData],
+    [approve, onEvent, push, reloadData, syncScheduled],
   );
 
   const send = useCallback(
@@ -356,6 +383,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setReady(true);
       await checkHealth(c2);
       await reloadData();
+      await syncScheduled();
 
       const n = await setupNotifications();
       setNotifyAvailable(n.available);
@@ -366,6 +394,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const tt = tRef.current;
           push('system', tt('routine.fired', { name: routine.name }));
           const prompt = `[例程触发] ${routine.name}${routine.description ? '：' + routine.description : ''}（时间设定 ${routine.schedule || '未指定'}）`;
+          await cancelScheduled(`routine-${routine.id}`);
           const answer = await runTurn(prompt, {
             silentBubble: true,
             agentId: routine.agentId ?? store.DEFAULT_AGENT_ID,
@@ -409,6 +438,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     activeAgentId: cfg.activeAgentId,
     activeAgent: agents.find((a) => a.id === cfg.activeAgentId),
     switchAgent,
+    syncScheduled,
     roomAgents: agents.filter(
       (a) => a.id === cfg.activeAgentId || cfg.roomAgentIds.includes(a.id),
     ),
