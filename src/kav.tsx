@@ -6,6 +6,7 @@
 import React, { useEffect, useState } from 'react';
 import { Dimensions, Keyboard, View, type ViewProps } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { diag } from './diag';
 
 type LibModule = { KeyboardAvoidingView?: any; KeyboardProvider?: any };
 
@@ -38,8 +39,20 @@ function FallbackKAV({ children, style, ...rest }: ViewProps) {
       // 用「窗口高度 - 键盘顶部屏幕坐标」算，比 endCoordinates.height 准
       // （后者在部分机型上少算了 IME 的工具栏高度）
       const win = Dimensions.get('window').height;
+      const screenH = Dimensions.get('screen').height;
       const top = e?.endCoordinates?.screenY ?? 0;
-      const lift = top > 0 ? win - top : (e?.endCoordinates?.height ?? 0);
+      const insetTop = insets.top;
+      // 少算的部分就是状态栏：screenY 是屏幕坐标，窗口坐标从状态栏下面开始
+      const lift = top > 0 ? win - top + insetTop : (e?.endCoordinates?.height ?? 0);
+      diag('kbd', {
+        win,
+        screenH,
+        top,
+        insetTop,
+        insetBottom: insets.bottom,
+        kbHeight: e?.endCoordinates?.height,
+        pad: Math.max(0, Math.round(lift)),
+      });
       setPad(Math.max(0, Math.round(lift)));
     });
     const hide = Keyboard.addListener('keyboardDidHide', () => setPad(0));
@@ -47,7 +60,7 @@ function FallbackKAV({ children, style, ...rest }: ViewProps) {
       show.remove();
       hide.remove();
     };
-  }, []);
+  }, [insets.top, insets.bottom]);
 
   return (
     <View style={[style, { paddingBottom: pad }]} {...rest}>
