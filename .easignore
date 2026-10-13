@@ -1,0 +1,19 @@
+# EAS 上传清单（存在 .easignore 时用它替代 .gitignore）
+# 注意：这里**不能**忽略 credentials/ 和 *.jks，否则本机签名密钥不会上传，构建会失败
+node_modules/
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+.kotlin/
+*.orig.*
+.metro-health-check*
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+.DS_Store
+*.pem
+.env*.local
+*.tsbuildinfo
+/ios
+/android
