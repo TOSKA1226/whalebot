@@ -119,6 +119,7 @@ export default function QuickScreen() {
               value={editing?.label ?? ''}
               onChangeText={(v) => setEditing((e) => (e ? { ...e, label: v } : e))}
               placeholder={t('home.newchat')}
+              placeholderTextColor="#9a9a9e"
             />
             <Text style={s.fieldLabel}>{t('quick.prompt')}</Text>
             <TextInput
