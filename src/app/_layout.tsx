@@ -1,4 +1,5 @@
 import * as NavBar from 'expo-navigation-bar';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
@@ -17,22 +18,24 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <SafeAreaProvider>
-      <StatusBar style="dark" />
-      {Platform.OS === 'android' ? <NavBar.NavigationBar hidden style="dark" /> : null}
-      <AppProvider>
-        <Stack
-          screenOptions={{
-            headerShown: false,
-            contentStyle: { backgroundColor: '#f5f5f7' },
-          }}
-        >
-          <Stack.Screen name="(tabs)" />
-          <Stack.Screen name="chat" options={{ presentation: 'card' }} />
-          <Stack.Screen name="quick" />
-          <Stack.Screen name="capabilities" />
-        </Stack>
-      </AppProvider>
-    </SafeAreaProvider>
+    <KeyboardProvider>
+      <SafeAreaProvider>
+        <StatusBar style="dark" />
+        {Platform.OS === 'android' ? <NavBar.NavigationBar hidden style="dark" /> : null}
+        <AppProvider>
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              contentStyle: { backgroundColor: '#f5f5f7' },
+            }}
+          >
+            <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="chat" options={{ presentation: 'card' }} />
+            <Stack.Screen name="quick" />
+            <Stack.Screen name="capabilities" />
+          </Stack>
+        </AppProvider>
+      </SafeAreaProvider>
+    </KeyboardProvider>
   );
 }
