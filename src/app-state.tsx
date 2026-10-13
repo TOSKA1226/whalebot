@@ -20,6 +20,7 @@ import * as store from './store';
 import { setActiveAgent as setToolAgent } from './context';
 import { nextDue, startScheduler } from './scheduler';
 import { diag } from './diag';
+import { getSecret } from './secrets';
 import {
   cancelAllScheduled,
   cancelScheduled,
@@ -76,6 +77,12 @@ type AppState = {
   presenceOf: (agentId: string) => 'online' | 'busy' | 'offline';
   /** 正在生成回复的助手 id（没有则为 null） */
   activeSpeakerId: string | null;
+  /** 某助手实际生效的配置（含它自己的模型/Key） */
+  effectiveCfg: (agentId: string) => Promise<Config>;
+  /** 重新扫描各助手的独立 Key 状态 */
+  refreshAgentKeys: () => Promise<void>;
+  /** 哪些助手配了自己的 Key */
+  agentHasKey: Record<string, boolean>;
 };
 
 const AppCtx = createContext<AppState | null>(null);
@@ -102,6 +109,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [activeSpeakerId, setActiveSpeakerId] = useState<string | null>(null);
   /** 每个助手最近一次请求的结果，用于推算在线/下线 */
   const [agentHealth, setAgentHealth] = useState<Record<string, 'ok' | 'error'>>({});
+  /** 每个助手是否配置了自己的 API Key（用于状态点） */
+  const [agentHasKey, setAgentHasKey] = useState<Record<string, boolean>>({});
   const [pending, setPending] = useState<
     { name: string; args: any; resolve: (ok: boolean) => void } | null
   >(null);
@@ -130,6 +139,38 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     tRef.current = t;
   }, [t]);
+
+  /** 读出每个助手是否有独立 Key（只在启动/保存助手时刷一次） */
+  const refreshAgentKeys = useCallback(async () => {
+    const map: Record<string, boolean> = {};
+    for (const a of agentsRef.current) {
+      try {
+        map[a.id] = !!(await getSecret(`apikey.${a.id}`));
+      } catch {
+        map[a.id] = false;
+      }
+    }
+    setAgentHasKey(map);
+  }, []);
+
+  /** 某助手实际生效的配置：优先它自己的模型/接口/Key，缺省回落全局 */
+  const effectiveCfg = useCallback(async (agentId: string): Promise<Config> => {
+    const base = cfgRef.current;
+    const a = agentsRef.current.find((x) => x.id === agentId);
+    let key = base.apiKey;
+    try {
+      const own = await getSecret(`apikey.${agentId}`);
+      if (own) key = own;
+    } catch {
+      // 读不到就用全局
+    }
+    return {
+      ...base,
+      apiKey: key,
+      model: a?.model?.trim() || base.model,
+      baseUrl: a?.baseUrl?.trim() || base.baseUrl,
+    };
+  }, []);
 
   const push = useCallback(
     (role: Bubble['role'], text: string, speaker?: string, tool?: Bubble['tool']) => {
@@ -244,8 +285,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const runTurn = useCallback(
     async (userText: string, opts: { silentBubble?: boolean; agentId?: string } = {}) => {
-      const c = cfgRef.current;
       const who = opts.agentId ?? agentRef.current;
+      const c = await effectiveCfg(who);
       lastTextRef.current = '';
       streamIdRef.current = null;
       toolIdRef.current = null;
@@ -293,7 +334,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           setActiveSpeakerId(member.id);
           try {
             await runAgent({
-              cfg: c,
+              cfg: await effectiveCfg(member.id),
               lang: c.lang,
               agentId: member.id,
               history: historyRef.current,
@@ -320,7 +361,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       return lastTextRef.current;
     },
-    [approve, onEvent, push, reloadData, syncScheduled],
+    [approve, effectiveCfg, onEvent, push, reloadData, syncScheduled],
   );
 
   const send = useCallback(
@@ -379,9 +420,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async (input: Parameters<typeof store.upsertAgent>[0]) => {
       const a = await store.upsertAgent(input);
       setAgents(await store.listAgents());
+      void refreshAgentKeys();
       return a;
     },
-    [],
+    [refreshAgentKeys],
   );
 
   const deleteAgent = useCallback(
@@ -406,11 +448,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const presenceOf = useCallback(
     (agentId: string): 'online' | 'busy' | 'offline' => {
       if (activeSpeakerId === agentId) return 'busy';
-      if (!cfg.apiKey) return 'offline';
+      if (!agentHasKey[agentId] && !cfg.apiKey) return 'offline';
       if (agentHealth[agentId] === 'error') return 'offline';
       return 'online';
     },
-    [activeSpeakerId, agentHealth, cfg.apiKey],
+    [activeSpeakerId, agentHealth, agentHasKey, cfg.apiKey],
   );
 
   // 启动：载配置 + 通知 + 调度 + 通知回复监听
@@ -435,6 +477,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       agentRef.current = activeId;
       setToolAgent(activeId);
       setAgents(list);
+      agentsRef.current = list;
+      void refreshAgentKeys();
       setCfg(c2);
       setBubbles([{ id: nextId(), role: 'system', text: makeT(c2.lang)('app.greeting') }]);
       historyRef.current = initialHistory(c2.lang);
@@ -519,6 +563,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     push,
     presenceOf,
     activeSpeakerId,
+    effectiveCfg,
+    refreshAgentKeys,
+    agentHasKey,
   };
 
   return (
