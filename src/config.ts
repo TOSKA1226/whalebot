@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Lang } from './i18n';
+import { getSecret, setSecret } from './secrets';
 
 export type Config = {
   apiKey: string;
@@ -26,17 +27,32 @@ export const DEFAULT_CONFIG: Config = {
 };
 
 const KEY = 'whalebot.config.v2';
+const SECRET_API_KEY = 'whalebot.apikey';
+const SECRET_EXEC_TOKEN = 'whalebot.exectoken';
 
 export async function loadConfig(): Promise<Config> {
+  let base: Config = { ...DEFAULT_CONFIG };
   try {
     const raw = await AsyncStorage.getItem(KEY);
-    if (!raw) return { ...DEFAULT_CONFIG };
-    return { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+    if (raw) base = { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
   } catch {
-    return { ...DEFAULT_CONFIG };
+    // 用默认值
   }
+  // 密钥优先取自加密存储（并兼容老版本留在明文里的值）
+  const [apiKey, execToken] = await Promise.all([
+    getSecret(SECRET_API_KEY),
+    getSecret(SECRET_EXEC_TOKEN),
+  ]);
+  return {
+    ...base,
+    apiKey: apiKey || base.apiKey || '',
+    execToken: execToken || base.execToken,
+  };
 }
 
 export async function saveConfig(c: Config): Promise<void> {
-  await AsyncStorage.setItem(KEY, JSON.stringify(c));
+  // 密钥不进明文存储
+  const { apiKey, execToken, ...rest } = c;
+  await AsyncStorage.setItem(KEY, JSON.stringify({ ...rest, apiKey: '', execToken: '' }));
+  await Promise.all([setSecret(SECRET_API_KEY, apiKey), setSecret(SECRET_EXEC_TOKEN, execToken)]);
 }
