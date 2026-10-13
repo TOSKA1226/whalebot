@@ -1,3 +1,4 @@
+import Constants from 'expo-constants';
 import { router } from 'expo-router';
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -138,6 +139,13 @@ export default function SettingsTab() {
             记忆 {data.memories.length} · 技能 {data.skills.length} · 例程 {data.routines.length}
           </Text>
         </Card>
+
+        <Row
+          title={t('settings.version')}
+          desc={`${Constants.expoConfig?.version ?? '—'} (${Constants.expoConfig?.android?.versionCode ?? '—'}) · SDK ${
+            Constants.expoConfig?.sdkVersion ?? '—'
+          }`}
+        />
 
         <Text style={s.note}>{t('settings.note')}</Text>
       </ScrollView>
