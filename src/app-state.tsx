@@ -22,6 +22,7 @@ import { nextDue, startScheduler } from './scheduler';
 import { diag } from './diag';
 import * as sessions from './sessions';
 import type { Session, SessionBubble } from './sessions';
+import { reviewToolCall } from './review';
 import { getSecret } from './secrets';
 import {
   cancelAllScheduled,
@@ -119,6 +120,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [currentSessionId, setCurrentSessionId] = useState<string>('');
   const sessionIdRef = useRef<string>('');
   const titleRef = useRef<string>('');
+  const lastUserTextRef = useRef<string>('');
+  const effectiveCfgRef = useRef<(id: string) => Promise<Config>>(async () => cfgRef.current);
   const [pending, setPending] = useState<
     { name: string; args: any; resolve: (ok: boolean) => void } | null
   >(null);
@@ -236,12 +239,32 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  /**
+   * 工具审批：开了自动复核就先让便宜模型判断
+   * allow → 直接放行；deny → 直接拒绝；ask / 复核失败 → 弹卡片问用户
+   */
   const approve = useCallback(
-    (name: string, args: any) =>
-      new Promise<boolean>((resolve) => {
+    async (name: string, args: any): Promise<boolean> => {
+      const c = cfgRef.current;
+      if (c.reviewEnabled) {
+        try {
+          const v = await reviewToolCall(await effectiveCfgRef.current(agentRef.current), {
+            name,
+            args,
+            userText: lastUserTextRef.current,
+          });
+          push('system', tRef.current('review.verdict', { v: v.verdict, why: v.reason }));
+          if (v.verdict === 'allow') return true;
+          if (v.verdict === 'deny') return false;
+        } catch (e: any) {
+          push('system', tRef.current('review.failed', { e: String(e?.message ?? e) }));
+        }
+      }
+      return new Promise<boolean>((resolve) => {
         setPending({ name, args, resolve });
-      }),
-    [],
+      });
+    },
+    [push],
   );
 
   const onEvent = useCallback(
@@ -341,6 +364,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       lastTextRef.current = '';
       streamIdRef.current = null;
       toolIdRef.current = null;
+      lastUserTextRef.current = userText;
       if (!opts.silentBubble) push('user', userText);
       if (!titleRef.current) {
         titleRef.current = sessions.titleFrom(userText, tRef.current('chats.untitled'));
@@ -555,6 +579,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
    * 助手状态（本地推算，没有后端）：
    * 忙碌 = 正在生成；下线 = 没配 Key 或上一次请求失败；其余为在线。
    */
+  useEffect(() => {
+    effectiveCfgRef.current = effectiveCfg;
+  }, [effectiveCfg]);
+
   const presenceOf = useCallback(
     (agentId: string): 'online' | 'busy' | 'offline' => {
       if (activeSpeakerId === agentId) return 'busy';

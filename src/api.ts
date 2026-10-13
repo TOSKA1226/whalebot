@@ -16,6 +16,29 @@ export type Msg = {
 
 export type ChatResult = { text: string; toolCalls: ToolCall[]; usage?: any };
 
+/** 非流式的轻量对话（给"自动复核"这类小判断用，必须便宜、必须快） */
+export async function quickChat(cfg: Config, messages: Msg[], maxTokens = 200): Promise<string> {
+  const res = await expoFetch(`${cfg.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${cfg.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: cfg.model,
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0,
+      stream: false,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`复核模型 HTTP ${res.status}：${(await res.text()).slice(0, 200)}`);
+  }
+  const data: any = await res.json();
+  return data?.choices?.[0]?.message?.content ?? '';
+}
+
 /** 流式对话（DeepSeek OpenAI 兼容接口），逐块回调文本增量。 */
 export async function streamChat(
   cfg: Config,

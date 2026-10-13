@@ -73,11 +73,30 @@ export default function SettingsTab() {
           onPress={() => router.push('/quick')}
         />
 
-        <Row
-          title={t('settings.autorule')}
-          desc={t('settings.autorule.desc')}
-          right={<Text style={s.pill}>下一步</Text>}
-        />
+        <Text style={s.label}>{t('settings.autorule')}</Text>
+        <View style={s.langRow}>
+          {[false, true].map((v) => (
+            <Btn
+              key={String(v)}
+              label={v ? t('review.on') : t('review.off')}
+              kind={draft.reviewEnabled === v ? 'primary' : 'ghost'}
+              style={{ flex: 1 }}
+              onPress={() => set({ reviewEnabled: v })}
+            />
+          ))}
+        </View>
+        <Text style={s.hint2}>{t('settings.autorule.desc')}</Text>
+        {draft.reviewEnabled ? (
+          <View style={{ marginTop: 10 }}>
+            <Field
+              label={t('review.model')}
+              value={draft.reviewModel}
+              onChange={(v) => set({ reviewModel: v })}
+              hint="deepseek-chat"
+            />
+            <Text style={s.hint2}>{t('review.note')}</Text>
+          </View>
+        ) : null}
         <Row title={t('btn.caps')} desc="23 项容器/手机能力 + 本地工具" onPress={() => router.push('/capabilities')} />
 
         <Btn label={t('settings.save')} onPress={() => saveCfg(draft)} style={{ marginTop: 18 }} />
