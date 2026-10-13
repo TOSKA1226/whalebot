@@ -13,7 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+import { KeyboardAvoidingView, hasNativeKeyboard } from '../kav';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp, type Bubble } from '../app-state';
 import { Btn, Dot } from '../ui';
@@ -126,6 +126,9 @@ export default function ChatScreen() {
             {t(`presence.${mainPresence}` as 'presence.online')}
             {members.length ? ` · ${t('room.participants')}：${members.length + 1}` : ` · ${t('room.title')}`}
           </Text>
+          <Text style={s.sub}>{`dbg kb=${kbHeight} inset=${insets.bottom} native=${String(
+            hasNativeKeyboard,
+          )}`}</Text>
         </View>
         <TouchableOpacity onPress={clearChat} style={s.iconBtn}>
           <Text style={s.iconTxt}>{t('chat.clear')}</Text>
