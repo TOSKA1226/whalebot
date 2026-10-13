@@ -20,6 +20,8 @@ import * as store from './store';
 import { setActiveAgent as setToolAgent } from './context';
 import { nextDue, startScheduler } from './scheduler';
 import { diag } from './diag';
+import * as sessions from './sessions';
+import type { Session, SessionBubble } from './sessions';
 import { getSecret } from './secrets';
 import {
   cancelAllScheduled,
@@ -30,15 +32,7 @@ import {
   setupNotifications,
 } from './notify';
 
-export type Bubble = {
-  id: string;
-  role: 'user' | 'assistant' | 'tool' | 'error' | 'system';
-  text: string;
-  /** 房间里是谁在说话 */
-  speaker?: string;
-  /** role === 'tool' 时的结构化信息（界面按显示模式渲染） */
-  tool?: { name: string; args?: any; ok?: boolean; done?: boolean };
-};
+export type Bubble = SessionBubble;
 
 let seq = 0;
 export const nextId = () => `b${++seq}`;
@@ -83,6 +77,15 @@ type AppState = {
   refreshAgentKeys: () => Promise<void>;
   /** 哪些助手配了自己的 Key */
   agentHasKey: Record<string, boolean>;
+  /** 会话列表（持久化） */
+  sessions: Session[];
+  currentSessionId: string;
+  /** 新开一段会话 */
+  newChat: () => Promise<void>;
+  /** 打开指定会话 */
+  openSession: (id: string) => Promise<void>;
+  /** 删除会话 */
+  deleteSession: (id: string) => Promise<void>;
 };
 
 const AppCtx = createContext<AppState | null>(null);
@@ -111,6 +114,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [agentHealth, setAgentHealth] = useState<Record<string, 'ok' | 'error'>>({});
   /** 每个助手是否配置了自己的 API Key（用于状态点） */
   const [agentHasKey, setAgentHasKey] = useState<Record<string, boolean>>({});
+  /** 会话列表（持久化）与当前会话 */
+  const [sessionList, setSessionList] = useState<Session[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string>('');
+  const sessionIdRef = useRef<string>('');
+  const titleRef = useRef<string>('');
   const [pending, setPending] = useState<
     { name: string; args: any; resolve: (ok: boolean) => void } | null
   >(null);
@@ -130,6 +138,56 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const speakerRef = useRef<string | undefined>(undefined);
   const agentsRef = useRef<store.Agent[]>([]);
 
+  const bubblesRef = useRef<Bubble[]>([]);
+  const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const push = useCallback(
+    (role: Bubble['role'], text: string, speaker?: string, tool?: Bubble['tool']) => {
+      const id = nextId();
+      setBubbles((prev) => [...prev, { id, role, text, speaker, tool }]);
+      return id;
+    },
+    [],
+  );
+
+  const appendTo = useCallback((id: string, chunk: string) => {
+    setBubbles((prev) => prev.map((b) => (b.id === id ? { ...b, text: b.text + chunk } : b)));
+  }, []);
+
+  /** 把当前会话写回存储（防抖；气泡一变就会触发） */
+  const persistSession = useCallback(
+    (immediate = false) => {
+      const id = sessionIdRef.current;
+      if (!id) return;
+      const payload: Session = {
+        id,
+        title: titleRef.current,
+        agentId: agentRef.current,
+        createdAt: 0,
+        updatedAt: Date.now(),
+        bubbles: [] as SessionBubble[],
+        messages: historyRef.current as any,
+      };
+      const write = async () => {
+        const prev = await sessions.getSession(id);
+        const full: Session = {
+          ...payload,
+          createdAt: prev?.createdAt ?? Date.now(),
+          bubbles: bubblesRef.current,
+          title: titleRef.current || prev?.title || '新对话',
+        };
+        await sessions.upsertSession(full);
+        setSessionList(await sessions.listSessions());
+      };
+      if (immediate) void write();
+      else {
+        if (persistTimer.current) clearTimeout(persistTimer.current);
+        persistTimer.current = setTimeout(() => void write(), 400);
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     cfgRef.current = cfg;
   }, [cfg]);
@@ -139,6 +197,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     tRef.current = t;
   }, [t]);
+
+  useEffect(() => {
+    bubblesRef.current = bubbles;
+    if (ready && sessionIdRef.current) persistSession();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bubbles, ready]);
 
   /** 读出每个助手是否有独立 Key（只在启动/保存助手时刷一次） */
   const refreshAgentKeys = useCallback(async () => {
@@ -170,19 +234,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       model: a?.model?.trim() || base.model,
       baseUrl: a?.baseUrl?.trim() || base.baseUrl,
     };
-  }, []);
-
-  const push = useCallback(
-    (role: Bubble['role'], text: string, speaker?: string, tool?: Bubble['tool']) => {
-      const id = nextId();
-      setBubbles((prev) => [...prev, { id, role, text, speaker, tool }]);
-      return id;
-    },
-    [],
-  );
-
-  const appendTo = useCallback((id: string, chunk: string) => {
-    setBubbles((prev) => prev.map((b) => (b.id === id ? { ...b, text: b.text + chunk } : b)));
   }, []);
 
   const approve = useCallback(
@@ -291,6 +342,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       streamIdRef.current = null;
       toolIdRef.current = null;
       if (!opts.silentBubble) push('user', userText);
+      if (!titleRef.current) {
+        titleRef.current = sessions.titleFrom(userText, tRef.current('chats.untitled'));
+      }
       setBusy(true);
       setActiveSpeakerId(who);
       try {
@@ -314,6 +368,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       } finally {
         setBusy(false);
         setActiveSpeakerId(null);
+        persistSession(true);
         await reloadData();
       }
 
@@ -361,7 +416,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       return lastTextRef.current;
     },
-    [approve, effectiveCfg, onEvent, push, reloadData, syncScheduled],
+    [approve, effectiveCfg, onEvent, persistSession, push, reloadData, syncScheduled],
   );
 
   const send = useCallback(
@@ -388,6 +443,68 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [cfg.lang, cfg.apiKey, checkHealth],
   );
 
+  /** 开一段新会话 */
+  const startSession = useCallback(async (agentId: string, greeting: string) => {
+    const sid = sessions.newSessionId();
+    sessionIdRef.current = sid;
+    titleRef.current = '';
+    setCurrentSessionId(sid);
+    setBubbles([{ id: nextId(), role: 'system', text: greeting }]);
+    historyRef.current = initialHistory(cfgRef.current.lang);
+    await sessions.upsertSession({
+      id: sid,
+      title: greeting,
+      agentId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      bubbles: [],
+      messages: [],
+    });
+    setSessionList(await sessions.listSessions());
+  }, []);
+
+  const newChat = useCallback(async () => {
+    await startSession(agentRef.current, tRef.current('app.greeting'));
+  }, [startSession]);
+
+  /** 打开已有会话（会连同它的助手一起切过去） */
+  const openSession = useCallback(async (id: string) => {
+    const sess = await sessions.getSession(id);
+    if (!sess) return;
+    sessionIdRef.current = sess.id;
+    titleRef.current = sess.title;
+    setCurrentSessionId(sess.id);
+    setBubbles(
+      sess.bubbles?.length
+        ? sess.bubbles
+        : [{ id: nextId(), role: 'system', text: tRef.current('app.greeting') }],
+    );
+    historyRef.current = (sess.messages?.length
+      ? sess.messages
+      : initialHistory(cfgRef.current.lang)) as typeof historyRef.current;
+    if (sess.agentId && sess.agentId !== agentRef.current) {
+      agentRef.current = sess.agentId;
+      setToolAgent(sess.agentId);
+      const next = { ...cfgRef.current, activeAgentId: sess.agentId };
+      await saveConfig(next);
+      setCfg(next);
+      await reloadData();
+    }
+  }, [reloadData]);
+
+  const deleteSession = useCallback(
+    async (id: string) => {
+      await sessions.removeSession(id);
+      const list = await sessions.listSessions();
+      setSessionList(list);
+      if (id === sessionIdRef.current) {
+        if (list[0]) await openSession(list[0].id);
+        else await startSession(agentRef.current, tRef.current('app.greeting'));
+      }
+    },
+    [openSession, startSession],
+  );
+
   const switchAgent = useCallback(
     async (id: string) => {
       agentRef.current = id;
@@ -395,19 +512,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const next = { ...cfgRef.current, activeAgentId: id };
       await saveConfig(next);
       setCfg(next);
-      // 换助手 = 换人格，会话重新开始（避免上个助手的历史污染新人设）
+      // 换助手 = 换人格：开一段属于它的新会话（避免上个助手的历史污染新人设）
       const a = await store.getAgent(id);
-      setBubbles([
-        {
-          id: nextId(),
-          role: 'system',
-          text: `已切换到「${a?.name ?? id}」`,
-        },
-      ]);
-      historyRef.current = initialHistory(next.lang);
       await reloadData();
+      await startSession(id, `已切换到「${a?.name ?? id}」`);
     },
-    [reloadData],
+    [reloadData, startSession],
   );
 
   const setRoomMembers = useCallback(async (ids: string[]) => {
@@ -480,8 +590,40 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       agentsRef.current = list;
       void refreshAgentKeys();
       setCfg(c2);
-      setBubbles([{ id: nextId(), role: 'system', text: makeT(c2.lang)('app.greeting') }]);
-      historyRef.current = initialHistory(c2.lang);
+      // 恢复上次的会话；没有就新建一段
+      const all = await sessions.listSessions();
+      const last = all.find((x) => x.agentId === activeId) ?? all[0];
+      if (last) {
+        sessionIdRef.current = last.id;
+        titleRef.current = last.title;
+        setCurrentSessionId(last.id);
+        setBubbles(
+          last.bubbles?.length
+            ? last.bubbles
+            : [{ id: nextId(), role: 'system', text: makeT(c2.lang)('app.greeting') }],
+        );
+        historyRef.current = (last.messages?.length
+          ? last.messages
+          : initialHistory(c2.lang)) as typeof historyRef.current;
+        diag('boot', `session restored: ${last.bubbles?.length ?? 0} bubbles`);
+      } else {
+        const sid = sessions.newSessionId();
+        sessionIdRef.current = sid;
+        titleRef.current = makeT(c2.lang)('chats.untitled');
+        setCurrentSessionId(sid);
+        setBubbles([{ id: nextId(), role: 'system', text: makeT(c2.lang)('app.greeting') }]);
+        historyRef.current = initialHistory(c2.lang);
+        await sessions.upsertSession({
+          id: sid,
+          title: titleRef.current,
+          agentId: activeId,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          bubbles: [],
+          messages: [],
+        });
+      }
+      setSessionList(await sessions.listSessions());
       setReady(true);
       diag('boot', 'ready');
       await checkHealth(c2);
@@ -566,6 +708,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     effectiveCfg,
     refreshAgentKeys,
     agentHasKey,
+    sessions: sessionList,
+    currentSessionId,
+    newChat,
+    openSession,
+    deleteSession,
   };
 
   return (
