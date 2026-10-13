@@ -19,6 +19,7 @@ import { makeT, type TFn } from './i18n';
 import * as store from './store';
 import { setActiveAgent as setToolAgent } from './context';
 import { nextDue, startScheduler } from './scheduler';
+import { diag } from './diag';
 import {
   cancelAllScheduled,
   cancelScheduled,
@@ -416,8 +417,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let stopScheduler: (() => void) | null = null;
     (async () => {
-      const c = await loadConfig();
+      diag('boot', 'startup begin');
+      let c = DEFAULT_CONFIG;
+      try {
+        c = await loadConfig();
+        diag('boot', 'config loaded');
+      } catch (e) {
+        diag('boot-fail', { where: 'loadConfig', e });
+        throw e;
+      }
       const list = await store.ensureAgents();
+      diag('boot', `agents loaded (${list.length})`);
       const exists = list.some((a) => a.id === c.activeAgentId);
       const activeId = exists ? c.activeAgentId : (list[0]?.id ?? store.DEFAULT_AGENT_ID);
       const c2 = { ...c, activeAgentId: activeId };
@@ -429,9 +439,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setBubbles([{ id: nextId(), role: 'system', text: makeT(c2.lang)('app.greeting') }]);
       historyRef.current = initialHistory(c2.lang);
       setReady(true);
+      diag('boot', 'ready');
       await checkHealth(c2);
       await reloadData();
       await syncScheduled();
+      diag('boot', 'first screen data loaded');
 
       const n = await setupNotifications();
       setNotifyAvailable(n.available);
@@ -453,7 +465,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         },
         (st) => setSched({ running: st.running, nextAt: st.nextAt }),
       );
-    })();
+      diag('boot', 'startup done');
+    })().catch((e) => {
+      // 以前这里的 rejection 会变成未处理拒绝，release 下直接白屏退出
+      diag('boot-fail', { where: 'startup', e });
+      push('system', `启动时出错：${String((e as any)?.message ?? e)}`);
+    });
 
     const sub = onNotificationResponse(async (payload) => {
       if (!payload.userText) return;
