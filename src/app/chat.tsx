@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Keyboard,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   ScrollView,
@@ -17,50 +18,18 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useApp, type Bubble } from '../app-state';
 import { Btn, Dot } from '../ui';
 
-/**
- * 聊天页键盘处理：
- * - 系统若已把窗口压缩（adjustResize 生效）→ 不需要额外顶起
- * - 没压缩（edge-to-edge 下很常见）→ 用键盘高度把输入框顶到键盘上方
- * 放在事件回调里算，避免在 effect 里同步 setState。
- */
-function useChatKeyboard(insetsBottom: number) {
-  const [state, setState] = useState({ h: 0, pad: 0 });
-  const insetsRef = useRef(insetsBottom);
-  const baseHRef = useRef(0);
-  const lastHRef = useRef(0);
-  const kbActiveRef = useRef(false);
-
+/** 只关心键盘有没有弹起（用于自动滚到底、底部内边距）；避免遮挡交给 KeyboardAvoidingView */
+function useKeyboardVisible() {
+  const [visible, setVisible] = useState(false);
   useEffect(() => {
-    insetsRef.current = insetsBottom;
-  }, [insetsBottom]);
-
-  useEffect(() => {
-    const show = Keyboard.addListener('keyboardDidShow', (e) => {
-      const h = e?.endCoordinates?.height ?? 0;
-      const resized =
-        lastHRef.current > 0 &&
-        baseHRef.current > 0 &&
-        lastHRef.current < baseHRef.current - 50;
-      kbActiveRef.current = true;
-      setState({ h, pad: resized ? 0 : Math.max(0, h - insetsRef.current) });
-    });
-    const hide = Keyboard.addListener('keyboardDidHide', () => {
-      kbActiveRef.current = false;
-      setState({ h: 0, pad: 0 });
-    });
+    const show = Keyboard.addListener('keyboardDidShow', () => setVisible(true));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setVisible(false));
     return () => {
       show.remove();
       hide.remove();
     };
   }, []);
-
-  /** 挂到根视图 onLayout：记录高度，用来判断系统有没有替我们压缩窗口 */
-  const onRootLayout = (h: number) => {
-    lastHRef.current = h;
-    if (!kbActiveRef.current) baseHRef.current = h;
-  };
-
-  return { kbHeight: state.h, kbPad: state.pad, onRootLayout };
+  return visible;
 }
 
 type Item =
@@ -85,8 +54,7 @@ export default function ChatScreen() {
   const [picking, setPicking] = useState(false);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const insets = useSafeAreaInsets();
-  const { kbHeight, kbPad, onRootLayout } = useChatKeyboard(insets.bottom);
-  const kb = kbHeight > 0;
+  const kb = useKeyboardVisible();
   const scrollRef = useRef<ScrollView>(null);
 
   useEffect(() => {
@@ -135,11 +103,12 @@ export default function ChatScreen() {
   const onlyGreeting = bubbles.every((b) => b.role === 'system');
 
   return (
-    <SafeAreaView
-      style={s.root}
-      edges={['top', 'left', 'right']}
-      onLayout={(e) => onRootLayout(e.nativeEvent.layout.height)}
-    >
+    <SafeAreaView style={s.root} edges={['top', 'left', 'right']}>
+      {/* 官方写法：Android 上只要用 KeyboardAvoidingView 包住内容区（flex:1）就能避免键盘遮挡 */}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
       <View style={s.header}>
         <TouchableOpacity onPress={() => router.back()} style={s.iconBtn}>
           <Ionicons name="chevron-back" size={18} color="#111" />
@@ -212,10 +181,7 @@ export default function ChatScreen() {
       <View
         style={[
           s.inputRow,
-          {
-            paddingBottom: kb ? 10 : Math.max(insets.bottom, 10),
-            marginBottom: kbPad,
-          },
+          { paddingBottom: kb ? 10 : Math.max(insets.bottom, 10) },
         ]}
       >
         <TextInput
@@ -234,7 +200,8 @@ export default function ChatScreen() {
         >
           <Ionicons name="arrow-up" size={18} color="#fff" />
         </TouchableOpacity>
-      </View>
+        </View>
+      </KeyboardAvoidingView>
 
       {/* 成员选择 */}
       <Modal visible={picking} animationType="slide" onRequestClose={() => setPicking(false)}>
