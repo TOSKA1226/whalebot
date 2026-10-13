@@ -205,6 +205,12 @@ export default function AgentProfile() {
           />
         ) : null}
 
+        <Row
+          title={t('data.title')}
+          desc={`${t('mem.memories')} ${data.memories.length} · ${t('mem.skills')} ${data.skills.length} · ${t('mem.routines')} ${data.routines.length}`}
+          onPress={() => router.push('/data')}
+        />
+
         <SectionTitle>
           {t('profile.memory')}（{data.memories.length}）
         </SectionTitle>

@@ -75,6 +75,7 @@ export default function RootLayout() {
             <Stack.Screen name="chat" options={{ presentation: 'card' }} />
             <Stack.Screen name="quick" />
                         <Stack.Screen name="mcp" />
+            <Stack.Screen name="data" />
             <Stack.Screen name="capabilities" />
           </Stack>
         </AppProvider>
