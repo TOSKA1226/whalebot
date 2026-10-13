@@ -34,6 +34,8 @@ export type Bubble = {
   text: string;
   /** 房间里是谁在说话 */
   speaker?: string;
+  /** role === 'tool' 时的结构化信息（界面按显示模式渲染） */
+  tool?: { name: string; args?: any; ok?: boolean; done?: boolean };
 };
 
 let seq = 0;
@@ -69,6 +71,10 @@ type AppState = {
   runTurn: (text: string, opts?: { silentBubble?: boolean }) => Promise<string>;
   clearChat: () => void;
   push: (role: Bubble['role'], text: string) => string;
+  /** 助手状态：在线 / 忙碌 / 下线 */
+  presenceOf: (agentId: string) => 'online' | 'busy' | 'offline';
+  /** 正在生成回复的助手 id（没有则为 null） */
+  activeSpeakerId: string | null;
 };
 
 const AppCtx = createContext<AppState | null>(null);
@@ -91,6 +97,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [notifyGranted, setNotifyGranted] = useState<boolean | null>(null);
   const [data, setData] = useState<AppState['data']>({ memories: [], skills: [], routines: [] });
   const [agents, setAgents] = useState<store.Agent[]>([]);
+  /** 正在生成回复的助手（房间成员轮流发言时也会变） */
+  const [activeSpeakerId, setActiveSpeakerId] = useState<string | null>(null);
+  /** 每个助手最近一次请求的结果，用于推算在线/下线 */
+  const [agentHealth, setAgentHealth] = useState<Record<string, 'ok' | 'error'>>({});
   const [pending, setPending] = useState<
     { name: string; args: any; resolve: (ok: boolean) => void } | null
   >(null);
@@ -120,11 +130,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     tRef.current = t;
   }, [t]);
 
-  const push = useCallback((role: Bubble['role'], text: string, speaker?: string) => {
-    const id = nextId();
-    setBubbles((prev) => [...prev, { id, role, text, speaker }]);
-    return id;
-  }, []);
+  const push = useCallback(
+    (role: Bubble['role'], text: string, speaker?: string, tool?: Bubble['tool']) => {
+      const id = nextId();
+      setBubbles((prev) => [...prev, { id, role, text, speaker, tool }]);
+      return id;
+    },
+    [],
+  );
 
   const appendTo = useCallback((id: string, chunk: string) => {
     setBubbles((prev) => prev.map((b) => (b.id === id ? { ...b, text: b.text + chunk } : b)));
@@ -154,20 +167,32 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           break;
         case 'tool_start':
           streamIdRef.current = null;
-          toolIdRef.current = push('tool', `🔧 ${e.name}  ${JSON.stringify(e.args).slice(0, 160)}`);
+          toolIdRef.current = push(
+            'tool',
+            `${e.name}  ${JSON.stringify(e.args).slice(0, 300)}`,
+            undefined,
+            { name: e.name, args: e.args },
+          );
           break;
         case 'tool_result': {
           const id = toolIdRef.current;
-          const brief = e.result?.ok
+          const ok = !!e.result?.ok;
+          const brief = ok
             ? `✓ ${String(e.result.stdout ?? JSON.stringify(e.result.data ?? 'ok')).slice(0, 400)}`
             : `⛔ ${String(e.result?.stderr ?? 'failed').slice(0, 400)}`;
-          if (id) appendTo(id, `\n${brief}`);
+          if (id) {
+            setBubbles((prev) =>
+              prev.map((b) =>
+                b.id === id ? { ...b, text: `${b.text}\n${brief}`, tool: { ...b.tool!, ok, done: true } } : b,
+              ),
+            );
+          }
           toolIdRef.current = null;
           break;
         }
         case 'error':
           streamIdRef.current = null;
-          push('error', `⚠️ ${e.message}`);
+          push('error', e.message);
           break;
         case 'done':
           streamIdRef.current = null;
@@ -219,16 +244,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const runTurn = useCallback(
     async (userText: string, opts: { silentBubble?: boolean; agentId?: string } = {}) => {
       const c = cfgRef.current;
+      const who = opts.agentId ?? agentRef.current;
       lastTextRef.current = '';
       streamIdRef.current = null;
       toolIdRef.current = null;
       if (!opts.silentBubble) push('user', userText);
       setBusy(true);
+      setActiveSpeakerId(who);
       try {
         const msgs = await runAgent({
           cfg: c,
           lang: c.lang,
-          agentId: opts.agentId ?? agentRef.current,
+          agentId: who,
           history: historyRef.current,
           userText,
           onEvent,
@@ -238,10 +265,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             new Promise<number>((resolve) => setBudgetAsk({ used, budget, resolve })),
         });
         historyRef.current = msgs;
+        setAgentHealth((h) => ({ ...h, [who]: 'ok' }));
       } catch (e: any) {
-        push('error', `⚠️ ${String(e?.message ?? e)}`);
+        push('error', String(e?.message ?? e));
+        setAgentHealth((h) => ({ ...h, [who]: 'error' }));
       } finally {
         setBusy(false);
+        setActiveSpeakerId(null);
         await reloadData();
       }
 
@@ -259,6 +289,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (!member) continue;
           speakerRef.current = member.name;
           lastTextRef.current = '';
+          setActiveSpeakerId(member.id);
           try {
             await runAgent({
               cfg: c,
@@ -274,10 +305,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               ...historyRef.current,
               { role: 'assistant', content: `[${member.name}] ${lastTextRef.current}` },
             ];
+            setAgentHealth((h) => ({ ...h, [member.id]: 'ok' }));
           } catch (e: any) {
-            push('error', `⚠️ ${member.name}：${String(e?.message ?? e)}`);
+            push('error', `${member.name}：${String(e?.message ?? e)}`);
+            setAgentHealth((h) => ({ ...h, [member.id]: 'error' }));
           } finally {
             speakerRef.current = undefined;
+            setActiveSpeakerId(null);
           }
         }
         await reloadData();
@@ -363,6 +397,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setBubbles([{ id: nextId(), role: 'system', text: tRef.current('app.greeting') }]);
     historyRef.current = initialHistory(cfgRef.current.lang);
   }, []);
+
+  /**
+   * 助手状态（本地推算，没有后端）：
+   * 忙碌 = 正在生成；下线 = 没配 Key 或上一次请求失败；其余为在线。
+   */
+  const presenceOf = useCallback(
+    (agentId: string): 'online' | 'busy' | 'offline' => {
+      if (activeSpeakerId === agentId) return 'busy';
+      if (!cfg.apiKey) return 'offline';
+      if (agentHealth[agentId] === 'error') return 'offline';
+      return 'online';
+    },
+    [activeSpeakerId, agentHealth, cfg.apiKey],
+  );
 
   // 启动：载配置 + 通知 + 调度 + 通知回复监听
   useEffect(() => {
@@ -452,6 +500,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     runTurn,
     clearChat,
     push,
+    presenceOf,
+    activeSpeakerId,
   };
 
   return (
