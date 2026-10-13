@@ -3,11 +3,17 @@ import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../../app-state';
-import type { Config } from '../../config';
+import type { Config, ToolDisplay } from '../../config';
 import type { Lang } from '../../i18n';
 import { Btn, Card, Header, Row, SectionTitle } from '../../ui';
 
 const LANGS: Lang[] = ['zh-Hans', 'en', 'system'];
+
+const TOOL_MODES: { v: ToolDisplay; k: 'tools.mode.show' | 'tools.mode.collapse' | 'tools.mode.hide' }[] = [
+  { v: 'show', k: 'tools.mode.show' },
+  { v: 'collapse', k: 'tools.mode.collapse' },
+  { v: 'hide', k: 'tools.mode.hide' },
+];
 
 export default function SettingsTab() {
   const { t, cfg, saveCfg, checkHealth, health, sched, notifyAvailable, notifyGranted, usage, data } =
@@ -46,6 +52,26 @@ export default function SettingsTab() {
             );
           })}
         </View>
+
+        <Text style={s.label}>{t('settings.tools')}</Text>
+        <View style={s.langRow}>
+          {TOOL_MODES.map((m) => (
+            <Btn
+              key={m.v}
+              label={t(m.k)}
+              kind={draft.toolDisplay === m.v ? 'primary' : 'ghost'}
+              style={{ flex: 1 }}
+              onPress={() => set({ toolDisplay: m.v })}
+            />
+          ))}
+        </View>
+        <Text style={s.hint2}>{t('settings.tools.desc')}</Text>
+
+        <Row
+          title={t('quick.title')}
+          desc={t('quick.count', { n: draft.quickActions.length })}
+          onPress={() => router.push('/quick')}
+        />
 
         <Row
           title={t('settings.autorule')}
@@ -124,6 +150,7 @@ const s = StyleSheet.create({
     fontSize: 15,
   },
   langRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
+  hint2: { fontSize: 11, color: '#aaa', marginBottom: 8 },
   pill: { fontSize: 11, color: '#8e8e93', backgroundColor: '#f0f0f3', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   line: { fontSize: 12, color: '#333', lineHeight: 19 },
   note: { marginTop: 16, color: '#999', fontSize: 12, lineHeight: 18 },

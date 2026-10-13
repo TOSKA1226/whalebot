@@ -193,7 +193,7 @@ export default function AgentProfile() {
               r.once && parsed && parsed.kind === 'once'
                 ? `${t('mem.once')} · ${new Date(r.createdAt + parsed.ms).toLocaleString()}`
                 : r.schedule || '—';
-            const warn = parsed ? '' : ' · ⚠️ 时间格式无法解析';
+            const warn = parsed ? '' : ` · ${t('mem.unparsable')}`;
             const due = r.enabled ? nextDue(r) : null;
             return (
               <Row

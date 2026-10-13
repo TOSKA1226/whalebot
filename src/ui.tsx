@@ -30,15 +30,18 @@ export function Row({
   title,
   desc,
   right,
+  left,
   onPress,
 }: {
   title: string;
   desc?: string;
   right?: React.ReactNode;
+  left?: React.ReactNode;
   onPress?: () => void;
 }) {
   const body = (
     <View style={u.row}>
+      {left}
       <View style={{ flex: 1 }}>
         <Text style={u.rowTitle}>{title}</Text>
         {desc ? <Text style={u.rowDesc}>{desc}</Text> : null}
@@ -51,6 +54,28 @@ export function Row({
     <TouchableOpacity onPress={onPress} activeOpacity={0.7}>
       {body}
     </TouchableOpacity>
+  );
+}
+
+/** 助手状态：在线（绿）/ 忙碌（红）/ 下线（灰） */
+export type Presence = 'online' | 'busy' | 'offline';
+
+export const PRESENCE_COLOR: Record<Presence, string> = {
+  online: '#34c759',
+  busy: '#ff3b30',
+  offline: '#c7c7cc',
+};
+
+export function Dot({ state, size = 9 }: { state: Presence; size?: number }) {
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        backgroundColor: PRESENCE_COLOR[state],
+      }}
+    />
   );
 }
 

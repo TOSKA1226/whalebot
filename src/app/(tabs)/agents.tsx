@@ -3,14 +3,15 @@ import { useState } from 'react';
 import { Modal, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../../app-state';
-import { Btn, Header, Row, SectionTitle } from '../../ui';
+import { Btn, Dot, Header, Row, SectionTitle } from '../../ui';
 
 export default function AgentsTab() {
-  const { t, agents, activeAgentId, saveAgent } = useApp();
+  const { t, agents, activeAgentId, saveAgent, presenceOf } = useApp();
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState({ name: '', group: '', description: '', persona: '' });
 
-  const groups = Array.from(new Set(agents.map((a) => a.group || '未分组')));
+  const ungrouped = t('agents.ungrouped');
+  const groups = Array.from(new Set(agents.map((a) => a.group || ungrouped)));
 
   return (
     <SafeAreaView style={s.root} edges={['top', 'left', 'right']}>
@@ -24,17 +25,24 @@ export default function AgentsTab() {
           <View key={g}>
             <SectionTitle>{g}</SectionTitle>
             {agents
-              .filter((a) => (a.group || '未分组') === g)
+              .filter((a) => (a.group || ungrouped) === g)
               .map((a) => (
                 <Row
                   key={a.id}
+                  left={<Dot state={presenceOf(a.id)} />}
                   title={`${a.name}${a.id === activeAgentId ? ` · ${t('agents.active')}` : ''}`}
                   desc={a.description || a.persona.slice(0, 60) || '—'}
+                  right={
+                    <Text style={{ fontSize: 11, color: '#8e8e93' }}>
+                      {t(`presence.${presenceOf(a.id)}` as 'presence.online')}
+                    </Text>
+                  }
                   onPress={() => router.push(`/agent/${a.id}`)}
                 />
               ))}
           </View>
         ))}
+        <Text style={s.hint}>{t('presence.note')}</Text>
         <Text style={s.hint}>{t('agents.hint')}</Text>
       </ScrollView>
 

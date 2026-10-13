@@ -1,7 +1,9 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -12,13 +14,32 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useApp } from '../app-state';
-import { Btn } from '../ui';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useApp, type Bubble } from '../app-state';
+import { Btn, Dot } from '../ui';
+
+/** 键盘弹起时不重复垫底部安全区（否则输入框会被顶高一截） */
+function useKeyboardVisible() {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', () => setVisible(true));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setVisible(false));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+  return visible;
+}
+
+type Item =
+  | { key: string; kind: 'bubble'; b: Bubble }
+  | { key: string; kind: 'tools'; list: Bubble[] };
 
 export default function ChatScreen() {
   const {
     t,
+    cfg,
     bubbles,
     busy,
     send,
@@ -27,12 +48,17 @@ export default function ChatScreen() {
     activeAgentId,
     roomAgents,
     setRoomMembers,
+    presenceOf,
   } = useApp();
   const [input, setInput] = useState('');
   const [picking, setPicking] = useState(false);
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+  const insets = useSafeAreaInsets();
+  const kb = useKeyboardVisible();
 
   const main = agents.find((a) => a.id === activeAgentId);
   const members = roomAgents.filter((a) => a.id !== activeAgentId);
+  const mainPresence = presenceOf(activeAgentId);
 
   const onSend = async () => {
     const text = input.trim();
@@ -47,20 +73,48 @@ export default function ChatScreen() {
     await setRoomMembers(next);
   };
 
+  /** 按「工具调用显示」设置把气泡整理成渲染列表（连续的工具气泡合成一组） */
+  const mode = cfg.toolDisplay;
+  const items = useMemo<Item[]>(() => {
+    const out: Item[] = [];
+    for (const b of bubbles) {
+      if (b.role === 'tool') {
+        if (mode === 'hide') continue;
+        if (mode === 'collapse') {
+          const last = out[out.length - 1];
+          if (last && last.kind === 'tools') {
+            last.list.push(b);
+            continue;
+          }
+          out.push({ key: `g-${b.id}`, kind: 'tools', list: [b] });
+          continue;
+        }
+      }
+      out.push({ key: b.id, kind: 'bubble', b });
+    }
+    return out;
+  }, [bubbles, mode]);
+
+  const onlyGreeting = bubbles.every((b) => b.role === 'system');
+
   return (
     <SafeAreaView style={s.root} edges={['top', 'left', 'right']}>
       <View style={s.header}>
         <TouchableOpacity onPress={() => router.back()} style={s.iconBtn}>
-          <Text style={s.iconTxt}>‹</Text>
+          <Ionicons name="chevron-back" size={18} color="#111" />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
-          <Text style={s.title}>{main?.name ?? t('chat.title')}</Text>
+          <View style={s.titleRow}>
+            <Dot state={mainPresence} />
+            <Text style={s.title}>{main?.name ?? t('chat.title')}</Text>
+          </View>
           <Text style={s.sub}>
-            {members.length ? `${t('room.participants')}：${members.length + 1}` : t('room.title')}
+            {t(`presence.${mainPresence}` as 'presence.online')}
+            {members.length ? ` · ${t('room.participants')}：${members.length + 1}` : ` · ${t('room.title')}`}
           </Text>
         </View>
         <TouchableOpacity onPress={clearChat} style={s.iconBtn}>
-          <Text style={s.iconTxt}>清空</Text>
+          <Text style={s.iconTxt}>{t('chat.clear')}</Text>
         </TouchableOpacity>
       </View>
 
@@ -72,35 +126,45 @@ export default function ChatScreen() {
         contentContainerStyle={{ paddingHorizontal: 12, gap: 8, alignItems: 'center' }}
       >
         <View style={[s.chip, s.chipMain]}>
+          <Dot state={mainPresence} />
           <Text style={s.chipMainTxt}>
             {main?.name ?? '—'} · {t('room.main')}
           </Text>
         </View>
         {members.map((m) => (
           <TouchableOpacity key={m.id} style={s.chip} onPress={() => toggleMember(m.id)}>
-            <Text style={s.chipTxt}>{m.name} ✕</Text>
+            <Dot state={presenceOf(m.id)} />
+            <Text style={s.chipTxt}>{m.name}</Text>
+            <Ionicons name="close" size={12} color="#8e8e93" />
           </TouchableOpacity>
         ))}
         <TouchableOpacity style={[s.chip, s.chipAdd]} onPress={() => setPicking(true)}>
-          <Text style={s.chipAddTxt}>{t('room.add')}</Text>
+          <Ionicons name="add" size={13} color="#0a84ff" />
+          <Text style={s.chipAddTxt}>{t('room.member')}</Text>
         </TouchableOpacity>
       </ScrollView>
       {members.length ? <Text style={s.hint}>{t('room.hint')}</Text> : null}
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 12, paddingBottom: 20 }}>
-        {bubbles.map((b) => (
-          <View key={b.id} style={[s.bubbleWrap, alignFor(b.role)]}>
-            {b.speaker ? <Text style={s.speaker}>{b.speaker}</Text> : null}
-            <View style={[s.bubble, roleStyle(b.role)]}>
-              <Text style={[s.bubbleTxt, b.role === 'user' && { color: '#fff' }]}>{b.text}</Text>
-            </View>
-          </View>
-        ))}
+        {onlyGreeting ? <Text style={s.empty}>{t('chat.empty')}</Text> : null}
+        {items.map((it) =>
+          it.kind === 'tools' ? (
+            <ToolGroup
+              key={it.key}
+              list={it.list}
+              open={!!openGroups[it.key]}
+              onToggle={() => setOpenGroups((p) => ({ ...p, [it.key]: !p[it.key] }))}
+              t={t}
+            />
+          ) : (
+            <RowBubble key={it.key} b={it.b} />
+          ),
+        )}
         {busy && <ActivityIndicator style={{ marginTop: 8 }} />}
       </ScrollView>
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <View style={s.inputRow}>
+        <View style={[s.inputRow, { paddingBottom: kb ? 10 : Math.max(insets.bottom, 10) }]}>
           <TextInput
             style={s.input}
             value={input}
@@ -114,14 +178,14 @@ export default function ChatScreen() {
             onPress={onSend}
             disabled={busy}
           >
-            <Text style={s.sendTxt}>{t('btn.send')}</Text>
+            <Ionicons name="arrow-up" size={18} color="#fff" />
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
 
       {/* 成员选择 */}
       <Modal visible={picking} animationType="slide" onRequestClose={() => setPicking(false)}>
-        <SafeAreaView style={s.root} edges={['top', 'left', 'right']}>
+        <SafeAreaView style={s.root} edges={['top', 'left', 'right', 'bottom']}>
           <View style={s.header}>
             <Text style={s.title}>{t('room.pick')}</Text>
           </View>
@@ -131,17 +195,14 @@ export default function ChatScreen() {
               .map((a) => {
                 const joined = roomAgents.some((x) => x.id === a.id);
                 return (
-                  <TouchableOpacity
-                    key={a.id}
-                    style={s.pickRow}
-                    onPress={() => toggleMember(a.id)}
-                  >
+                  <TouchableOpacity key={a.id} style={s.pickRow} onPress={() => toggleMember(a.id)}>
+                    <Dot state={presenceOf(a.id)} />
                     <View style={{ flex: 1 }}>
                       <Text style={s.pickName}>{a.name}</Text>
                       <Text style={s.pickDesc}>{a.description || a.group}</Text>
                     </View>
                     <Text style={[s.pickState, joined && { color: '#0a84ff' }]}>
-                      {joined ? '已加入' : '未加入'}
+                      {joined ? t('room.joined') : t('room.notjoined')}
                     </Text>
                   </TouchableOpacity>
                 );
@@ -154,27 +215,90 @@ export default function ChatScreen() {
   );
 }
 
-const alignFor = (r: string) =>
-  r === 'user'
-    ? ({ alignItems: 'flex-end' } as const)
-    : r === 'tool' || r === 'error'
-      ? ({ alignItems: 'stretch' } as const)
-      : ({ alignItems: 'flex-start' } as const);
-
-const roleStyle = (r: string) => {
-  switch (r) {
-    case 'user':
-      return { backgroundColor: '#0a84ff' };
-    case 'assistant':
-      return { backgroundColor: '#fff' };
-    case 'tool':
-      return { backgroundColor: '#fff8e6' };
-    case 'error':
-      return { backgroundColor: '#ffe9e9' };
-    default:
-      return { backgroundColor: 'transparent' };
+/** 普通气泡（用户/助手/工具/错误/系统） */
+function RowBubble({ b }: { b: Bubble }) {
+  if (b.role === 'tool') return <ToolCard b={b} />;
+  if (b.role === 'system') {
+    return (
+      <View style={s.sysRow}>
+        <Ionicons name="information-circle-outline" size={13} color="#8e8e93" />
+        <Text style={s.sysTxt}>{b.text}</Text>
+      </View>
+    );
   }
-};
+  if (b.role === 'error') {
+    return (
+      <View style={[s.bubbleWrap, { alignItems: 'stretch' }]}>
+        {b.speaker ? <Text style={s.speaker}>{b.speaker}</Text> : null}
+        <View style={[s.bubble, s.bubbleError, s.errRow]}>
+          <Ionicons name="alert-circle" size={15} color="#ff3b30" />
+          <Text style={[s.bubbleTxt, { flex: 1 }]}>{b.text}</Text>
+        </View>
+      </View>
+    );
+  }
+  return (
+    <View style={[s.bubbleWrap, b.role === 'user' ? { alignItems: 'flex-end' } : null]}>
+      {b.speaker ? <Text style={s.speaker}>{b.speaker}</Text> : null}
+      <View style={[s.bubble, b.role === 'user' ? s.bubbleUser : s.bubbleAssistant]}>
+        <Text style={[s.bubbleTxt, b.role === 'user' && { color: '#fff' }]}>{b.text}</Text>
+      </View>
+    </View>
+  );
+}
+
+/** 折叠模式：连续的工具调用合成一行，点开看详情 */
+function ToolGroup({
+  list,
+  open,
+  onToggle,
+  t,
+}: {
+  list: Bubble[];
+  open: boolean;
+  onToggle: () => void;
+  t: (k: any, v?: any) => string;
+}) {
+  const failed = list.some((b) => b.tool?.done && b.tool?.ok === false);
+  return (
+    <View style={s.toolGroup}>
+      <TouchableOpacity style={s.toolHead} onPress={onToggle} activeOpacity={0.7}>
+        <Ionicons name="construct-outline" size={14} color="#8a6d1f" />
+        <Text style={s.toolGroupTitle}>{t('tools.calls', { n: list.length })}</Text>
+        {failed ? <Ionicons name="alert-circle" size={13} color="#ff3b30" /> : null}
+        <View style={{ flex: 1 }} />
+        <Text style={s.toolToggle}>{open ? t('tools.collapse') : t('tools.detail')}</Text>
+        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={13} color="#8e8e93" />
+      </TouchableOpacity>
+      {open ? list.map((b) => <ToolCard key={b.id} b={b} />) : null}
+    </View>
+  );
+}
+
+/** 单条工具调用（显示模式 / 折叠展开后） */
+function ToolCard({ b }: { b: Bubble }) {
+  const done = !!b.tool?.done;
+  const ok = b.tool?.ok;
+  return (
+    <View style={s.toolCard}>
+      <View style={s.toolHead}>
+        <Ionicons name="build-outline" size={13} color="#8a6d1f" />
+        <Text style={s.toolName}>{b.tool?.name ?? 'tool'}</Text>
+        <View style={{ flex: 1 }} />
+        {done ? (
+          <Ionicons
+            name={ok ? 'checkmark-circle' : 'close-circle'}
+            size={14}
+            color={ok ? '#34c759' : '#ff3b30'}
+          />
+        ) : (
+          <ActivityIndicator size="small" color="#8a6d1f" />
+        )}
+      </View>
+      <Text style={s.toolBody}>{b.text}</Text>
+    </View>
+  );
+}
 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#f5f5f7' },
@@ -186,16 +310,20 @@ const s = StyleSheet.create({
     paddingBottom: 6,
     gap: 8,
   },
-  title: { fontSize: 18, fontWeight: '700' },
-  sub: { fontSize: 11, color: '#888' },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  title: { fontSize: 18, fontWeight: '700', color: '#111' },
+  sub: { fontSize: 11, color: '#888', marginTop: 2 },
   iconBtn: {
     paddingHorizontal: 12,
     paddingVertical: 6,
     backgroundColor: '#e8e8ec',
     borderRadius: 8,
   },
-  iconTxt: { fontSize: 14 },
+  iconTxt: { fontSize: 14, color: '#111' },
   chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     backgroundColor: '#fff',
     borderRadius: 999,
     paddingHorizontal: 12,
@@ -209,11 +337,45 @@ const s = StyleSheet.create({
   chipAdd: { borderStyle: 'dashed' },
   chipAddTxt: { fontSize: 12, color: '#0a84ff' },
   hint: { fontSize: 11, color: '#999', paddingHorizontal: 14, paddingBottom: 6 },
+  empty: { fontSize: 13, color: '#999', paddingHorizontal: 4, paddingVertical: 8 },
   bubbleWrap: { maxWidth: '92%', marginBottom: 8 },
   speaker: { fontSize: 11, color: '#0a84ff', marginBottom: 3, fontWeight: '600' },
   bubble: { borderRadius: 14, paddingHorizontal: 12, paddingVertical: 9 },
+  bubbleUser: { backgroundColor: '#0a84ff' },
+  bubbleAssistant: { backgroundColor: '#fff' },
+  bubbleError: { backgroundColor: '#ffe9e9' },
+  errRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
   bubbleTxt: { fontSize: 15, lineHeight: 21, color: '#111' },
-  inputRow: { flexDirection: 'row', padding: 10, gap: 8, alignItems: 'flex-end' },
+  sysRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    alignSelf: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 8,
+  },
+  sysTxt: { fontSize: 12, color: '#8e8e93' },
+  toolGroup: { marginBottom: 8 },
+  toolCard: {
+    backgroundColor: '#fff8e6',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginBottom: 6,
+  },
+  toolHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  toolName: { fontSize: 12, fontWeight: '700', color: '#8a6d1f' },
+  toolGroupTitle: { fontSize: 12, fontWeight: '600', color: '#6b6b70' },
+  toolToggle: { fontSize: 11, color: '#8e8e93' },
+  toolBody: {
+    fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo',
+    fontSize: 11,
+    color: '#5c5c60',
+    marginTop: 5,
+    lineHeight: 16,
+  },
+  inputRow: { flexDirection: 'row', padding: 10, paddingBottom: 10, gap: 8, alignItems: 'flex-end' },
   input: {
     flex: 1,
     backgroundColor: '#fff',
@@ -226,13 +388,13 @@ const s = StyleSheet.create({
   sendBtn: {
     backgroundColor: '#0a84ff',
     borderRadius: 12,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     paddingVertical: 12,
   },
-  sendTxt: { color: '#fff', fontWeight: '600' },
   pickRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 10,
     backgroundColor: '#fff',
     borderRadius: 12,
     paddingHorizontal: 14,

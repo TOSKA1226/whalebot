@@ -2,6 +2,18 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Lang } from './i18n';
 import { getSecret, setSecret } from './secrets';
 
+/** 首页快捷指令（用户自定义；旧的三个写死的测试入口已移除） */
+export type QuickAction = {
+  id: string;
+  /** 首页显示的文字 */
+  label: string;
+  /** 点一下发给助手的内容 */
+  prompt: string;
+};
+
+/** 聊天里工具调用气泡的显示方式 */
+export type ToolDisplay = 'show' | 'collapse' | 'hide';
+
 export type Config = {
   apiKey: string;
   baseUrl: string;
@@ -13,6 +25,10 @@ export type Config = {
   activeAgentId: string;
   /** 房间参与者（含主答）；空数组表示只有主答一人 */
   roomAgentIds: string[];
+  /** 工具调用气泡怎么显示 */
+  toolDisplay: ToolDisplay;
+  /** 首页快捷指令 */
+  quickActions: QuickAction[];
 };
 
 export const DEFAULT_CONFIG: Config = {
@@ -24,6 +40,8 @@ export const DEFAULT_CONFIG: Config = {
   lang: 'zh-Hans',
   activeAgentId: 'default',
   roomAgentIds: [],
+  toolDisplay: 'show',
+  quickActions: [],
 };
 
 const KEY = 'whalebot.config.v2';
@@ -47,6 +65,8 @@ export async function loadConfig(): Promise<Config> {
     ...base,
     apiKey: apiKey || base.apiKey || '',
     execToken: execToken || base.execToken,
+    quickActions: Array.isArray(base.quickActions) ? base.quickActions : [],
+    toolDisplay: base.toolDisplay ?? 'show',
   };
 }
 
