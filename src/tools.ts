@@ -7,6 +7,8 @@
 export type ToolSpec = {
   name: string;
   capability: string;
+  /** 外部 MCP 工具（capability 用不到，走 mcp 字段） */
+  mcp?: { serverId: string; tool: string };
   needsApproval: boolean;
   description: string;
   parameters: any;
@@ -284,3 +286,21 @@ export function findTool(name: string): ToolSpec | undefined {
   return TOOLS.find((t) => t.name === name);
 }
 
+
+/** 把 MCP 服务器发现的工具转成模型可用的工具表 */
+export function mcpToolSpecs(list: import('./mcp').McpTool[]): ToolSpec[] {
+  return list.map((t) => ({
+    name: `mcp__${t.serverName.replace(/[^A-Za-z0-9_]/g, '_')}__${t.name.replace(/[^A-Za-z0-9_]/g, '_')}`.slice(
+      0,
+      64,
+    ),
+    capability: `mcp:${t.serverId}:${t.name}`,
+    needsApproval: true,
+    description: `[MCP·${t.serverName}] ${t.description || t.name}`,
+    parameters: t.inputSchema?.properties
+      ? t.inputSchema
+      : { type: 'object', properties: {}, required: [] },
+    local: false,
+    mcp: { serverId: t.serverId, tool: t.name },
+  }));
+}

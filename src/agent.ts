@@ -1,7 +1,8 @@
 import { streamChat, execTool, type ChatResult, type Msg } from './api';
-import { toolSchemas, findTool } from './tools';
+import { TOOLS } from './tools';
 import { resolveLang, systemPrompt, type Lang } from './i18n';
 import { LOCAL_HANDLERS } from './localTools';
+import type { ToolSpec } from './tools';
 import * as store from './store';
 import type { Config } from './config';
 
@@ -97,6 +98,10 @@ export async function runAgent(params: {
   budgetTokens?: number;
   /** 超预算时询问用户；返回额外额度，0 表示停止 */
   onBudget?: (used: number, budget: number) => Promise<number>;
+  /** 额外工具（MCP 等外部来源） */
+  extraTools?: ToolSpec[];
+  /** 执行外部 MCP 工具 */
+  runMcpTool?: (serverId: string, tool: string, args: any) => Promise<{ ok: boolean; text: string }>;
 }): Promise<Msg[]> {
   const {
     cfg,
@@ -109,7 +114,15 @@ export async function runAgent(params: {
     maxSteps = 8,
     budgetTokens,
     onBudget,
+    extraTools = [],
+    runMcpTool,
   } = params;
+
+  const allTools = [...TOOLS, ...extraTools];
+  const toolSchemas = allTools.map((t) => ({
+    type: 'function' as const,
+    function: { name: t.name, description: t.description, parameters: t.parameters },
+  }));
 
   let used = 0;
   let budget = budgetTokens ?? Number.POSITIVE_INFINITY;
@@ -168,7 +181,7 @@ export async function runAgent(params: {
       } catch {
         args = {};
       }
-      const spec = findTool(call.function.name);
+      const spec = allTools.find((x) => x.name === call.function.name);
       if (!spec) {
         messages.push({
           role: 'tool',
@@ -191,6 +204,47 @@ export async function runAgent(params: {
         }
         onEvent({ type: 'tool_result', name: spec.name, result });
         messages.push({ role: 'tool', tool_call_id: call.id, content: shortResult(result) });
+        continue;
+      }
+
+      // 外部 MCP 工具
+      if (spec.mcp) {
+        if (spec.needsApproval) {
+          const okMcp = await approve(spec.name, args);
+          if (!okMcp) {
+            onEvent({
+              type: 'tool_result',
+              name: spec.name,
+              result: { ok: false, stderr: '用户拒绝了这个操作' },
+            });
+            messages.push({
+              role: 'tool',
+              tool_call_id: call.id,
+              content: JSON.stringify({ ok: false, stderr: '用户拒绝了这个操作，不要重试同一动作' }),
+            });
+            continue;
+          }
+        }
+        let mcpResult: any;
+        try {
+          mcpResult = runMcpTool
+            ? await runMcpTool(spec.mcp.serverId, spec.mcp.tool, args ?? {})
+            : { ok: false, text: 'MCP 未就绪' };
+        } catch (e: any) {
+          mcpResult = { ok: false, text: String(e?.message ?? e) };
+        }
+        onEvent({
+          type: 'tool_result',
+          name: spec.name,
+          result: mcpResult.ok
+            ? { ok: true, data: mcpResult.text }
+            : { ok: false, stderr: mcpResult.text },
+        });
+        messages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: JSON.stringify(mcpResult).slice(0, 4000),
+        });
         continue;
       }
 
