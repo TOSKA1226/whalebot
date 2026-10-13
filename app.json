@@ -39,6 +39,13 @@
     "scheme": "whalebot",
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "3a9c5d5c-bf01-400e-b27d-b58f7d758dd2"
+      }
+    },
+    "owner": "toska2006"
   }
 }

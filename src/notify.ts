@@ -223,3 +223,58 @@ export function onNotificationResponse(
     },
   };
 }
+
+/* ---------------- 预排系统通知（M4：App 关掉也能到点提醒） ---------------- */
+
+/**
+ * 向系统预约一条定时通知。只有原生模块可用时才行（dev build / 正式包）；
+ * Expo Go 里返回 false，由前台心跳兜底。
+ */
+export async function scheduleAt(
+  atMs: number,
+  title: string,
+  body: string,
+  identifier: string,
+): Promise<boolean> {
+  const N = await load();
+  if (!N) return false;
+  if (!(atMs > Date.now() + 1000)) return false;
+  try {
+    await N.scheduleNotificationAsync({
+      identifier,
+      content: {
+        title,
+        body: body.slice(0, 900),
+        sound: true,
+        categoryIdentifier: REPLY_CATEGORY,
+      },
+      trigger: {
+        type: N.SchedulableTriggerInputTypes.DATE,
+        date: new Date(atMs),
+      },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function cancelScheduled(identifier: string): Promise<void> {
+  const N = await load();
+  if (!N) return;
+  try {
+    await N.cancelScheduledNotificationAsync(identifier);
+  } catch {
+    // 忽略：可能本来就没有
+  }
+}
+
+export async function cancelAllScheduled(): Promise<void> {
+  const N = await load();
+  if (!N) return;
+  try {
+    await N.cancelAllScheduledNotificationsAsync();
+  } catch {
+    // 忽略
+  }
+}
