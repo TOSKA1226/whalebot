@@ -51,6 +51,8 @@ export default function ChatScreen() {
     roomAgents,
     setRoomMembers,
     presenceOf,
+    sessions,
+    currentSessionId,
   } = useApp();
   const [input, setInput] = useState('');
   const [picking, setPicking] = useState(false);
@@ -65,6 +67,7 @@ export default function ChatScreen() {
   }, [bubbles.length, kb]);
 
   const main = agents.find((a) => a.id === activeAgentId);
+  const sessionTitle = sessions.find((x) => x.id === currentSessionId)?.title;
   const members = roomAgents.filter((a) => a.id !== activeAgentId);
   const mainPresence = presenceOf(activeAgentId);
 
@@ -118,7 +121,8 @@ export default function ChatScreen() {
             <Dot state={mainPresence} />
             <Text style={s.title}>{main?.name ?? t('chat.title')}</Text>
           </View>
-          <Text style={s.sub}>
+          <Text style={s.sub} numberOfLines={1}>
+            {sessionTitle ? `${sessionTitle} · ` : ''}
             {t(`presence.${mainPresence}` as 'presence.online')}
             {members.length ? ` · ${t('room.participants')}：${members.length + 1}` : ` · ${t('room.title')}`}
           </Text>

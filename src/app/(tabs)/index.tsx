@@ -6,7 +6,8 @@ import { useApp } from '../../app-state';
 import { Btn, Card, Header, SectionTitle } from '../../ui';
 
 export default function HomeTab() {
-  const { t, cfg, health, sched, usage, notifyAvailable, notifyGranted, data, send } = useApp();
+  const { t, cfg, health, sched, usage, notifyAvailable, notifyGranted, data, send, newChat } =
+    useApp();
 
   const quick = async (text: string) => {
     router.push('/chat');
@@ -19,7 +20,10 @@ export default function HomeTab() {
       <ScrollView contentContainerStyle={s.body}>
         <Btn
           label={t('home.newchat')}
-          onPress={() => router.push('/chat')}
+          onPress={async () => {
+            await newChat();
+            router.push('/chat');
+          }}
           style={{ marginBottom: 4 }}
         />
 
