@@ -25,6 +25,8 @@ export default function TabsLayout() {
         tabBarInactiveTintColor: '#8e8e93',
         tabBarLabelStyle: { fontSize: 11 },
         tabBarStyle: { paddingTop: 4 },
+        // 键盘弹起时藏起标签栏，否则它会被顶到键盘上方（Expo 键盘处理指南的建议）
+        tabBarHideOnKeyboard: true,
       }}
     >
       <Tabs.Screen
