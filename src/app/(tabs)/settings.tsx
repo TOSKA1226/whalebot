@@ -16,8 +16,19 @@ const TOOL_MODES: { v: ToolDisplay; k: 'tools.mode.show' | 'tools.mode.collapse'
 ];
 
 export default function SettingsTab() {
-  const { t, cfg, saveCfg, checkHealth, health, sched, notifyAvailable, notifyGranted, usage, data } =
-    useApp();
+  const {
+    t,
+    cfg,
+    saveCfg,
+    checkHealth,
+    health,
+    sched,
+    notifyAvailable,
+    notifyGranted,
+    usage,
+    data,
+    mcpTools,
+  } = useApp();
   const [draft, setDraft] = useState<Config>(cfg);
 
   const set = (patch: Partial<Config>) => setDraft({ ...draft, ...patch });
@@ -66,6 +77,12 @@ export default function SettingsTab() {
           ))}
         </View>
         <Text style={s.hint2}>{t('settings.tools.desc')}</Text>
+
+        <Row
+          title={t('mcp.entry')}
+          desc={t('mcp.tools', { n: mcpTools.length })}
+          onPress={() => router.push('/mcp')}
+        />
 
         <Row
           title={t('quick.title')}

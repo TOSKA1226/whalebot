@@ -19,9 +19,11 @@ import { makeT, type TFn } from './i18n';
 import * as store from './store';
 import { setActiveAgent as setToolAgent } from './context';
 import { nextDue, startScheduler } from './scheduler';
+import { mcpToolSpecs } from './tools';
 import { diag } from './diag';
 import * as sessions from './sessions';
 import type { Session, SessionBubble } from './sessions';
+import { callTool, listTools, type McpTool } from './mcp';
 import { reviewToolCall } from './review';
 import { getSecret } from './secrets';
 import {
@@ -87,6 +89,12 @@ type AppState = {
   openSession: (id: string) => Promise<void>;
   /** 删除会话 */
   deleteSession: (id: string) => Promise<void>;
+  /** MCP：已发现的工具 */
+  mcpTools: McpTool[];
+  /** MCP：每个服务器的连接状态（ok:N / err:...） */
+  mcpStatus: Record<string, string>;
+  /** 重新连接所有 MCP 服务器 */
+  refreshMcp: () => Promise<void>;
 };
 
 const AppCtx = createContext<AppState | null>(null);
@@ -115,13 +123,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [agentHealth, setAgentHealth] = useState<Record<string, 'ok' | 'error'>>({});
   /** 每个助手是否配置了自己的 API Key（用于状态点） */
   const [agentHasKey, setAgentHasKey] = useState<Record<string, boolean>>({});
+  /** MCP：发现的工具 + 每个服务器的连接状态 */
+  const [mcpTools, setMcpTools] = useState<McpTool[]>([]);
+  const [mcpStatus, setMcpStatus] = useState<Record<string, string>>({});
+  const mcpToolsRef = useRef<McpTool[]>([]);
+
+  /** 连接所有启用的 MCP 服务器并拉取工具清单 */
+  const refreshMcp = useCallback(async () => {
+    const servers = (cfgRef.current.mcpServers ?? []).filter((x) => x.enabled);
+    const found: McpTool[] = [];
+    const status: Record<string, string> = {};
+    for (const srv of servers) {
+      try {
+        const list = await listTools(srv);
+        found.push(...list);
+        status[srv.id] = `ok:${list.length}`;
+      } catch (e: any) {
+        status[srv.id] = `err:${String(e?.message ?? e).slice(0, 100)}`;
+      }
+    }
+    mcpToolsRef.current = found;
+    setMcpTools(found);
+    setMcpStatus(status);
+  }, []);
+
   /** 会话列表（持久化）与当前会话 */
   const [sessionList, setSessionList] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string>('');
   const sessionIdRef = useRef<string>('');
   const titleRef = useRef<string>('');
   const lastUserTextRef = useRef<string>('');
-  const effectiveCfgRef = useRef<(id: string) => Promise<Config>>(async () => cfgRef.current);
   const [pending, setPending] = useState<
     { name: string; args: any; resolve: (ok: boolean) => void } | null
   >(null);
@@ -192,6 +223,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
 
   useEffect(() => {
+    // 这个 ref 只是给回调读取最新配置用，属于标准用法
+    // eslint-disable-next-line react-hooks/immutability
     cfgRef.current = cfg;
   }, [cfg]);
   useEffect(() => {
@@ -248,7 +281,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const c = cfgRef.current;
       if (c.reviewEnabled) {
         try {
-          const v = await reviewToolCall(await effectiveCfgRef.current(agentRef.current), {
+          const v = await reviewToolCall(await effectiveCfg(agentRef.current), {
             name,
             args,
             userText: lastUserTextRef.current,
@@ -264,7 +297,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setPending({ name, args, resolve });
       });
     },
-    [push],
+    [effectiveCfg, push],
   );
 
   const onEvent = useCallback(
@@ -380,6 +413,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           userText,
           onEvent,
           approve,
+          extraTools: mcpToolSpecs(mcpToolsRef.current),
+          runMcpTool: async (serverId, tool, args) => {
+            const srv = cfgRef.current.mcpServers.find((x) => x.id === serverId);
+            if (!srv) return { ok: false, text: '找不到这个 MCP 服务器（可能已被删除）' };
+            try {
+              return await callTool(srv, tool, args);
+            } catch (e: any) {
+              return { ok: false, text: String(e?.message ?? e) };
+            }
+          },
           budgetTokens: 200000,
           onBudget: (used, budget) =>
             new Promise<number>((resolve) => setBudgetAsk({ used, budget, resolve })),
@@ -463,8 +506,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         historyRef.current = initialHistory(next.lang);
       }
       await checkHealth(next);
+      void refreshMcp();
     },
-    [cfg.lang, cfg.apiKey, checkHealth],
+    [cfg.lang, cfg.apiKey, checkHealth, refreshMcp],
   );
 
   /** 开一段新会话 */
@@ -579,10 +623,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
    * 助手状态（本地推算，没有后端）：
    * 忙碌 = 正在生成；下线 = 没配 Key 或上一次请求失败；其余为在线。
    */
-  useEffect(() => {
-    effectiveCfgRef.current = effectiveCfg;
-  }, [effectiveCfg]);
-
   const presenceOf = useCallback(
     (agentId: string): 'online' | 'busy' | 'offline' => {
       if (activeSpeakerId === agentId) return 'busy';
@@ -652,6 +692,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         });
       }
       setSessionList(await sessions.listSessions());
+      void refreshMcp();
       setReady(true);
       diag('boot', 'ready');
       await checkHealth(c2);
@@ -741,6 +782,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     newChat,
     openSession,
     deleteSession,
+    mcpTools,
+    mcpStatus,
+    refreshMcp,
   };
 
   return (

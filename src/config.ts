@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Lang } from './i18n';
+import type { McpServer } from './mcp';
 import { getSecret, setSecret } from './secrets';
 
 /** 首页快捷指令（用户自定义；旧的三个写死的测试入口已移除） */
@@ -33,6 +34,8 @@ export type Config = {
   reviewEnabled: boolean;
   /** 复核用的模型；留空则用当前助手的模型 */
   reviewModel: string;
+  /** 外接 MCP 服务器 */
+  mcpServers: McpServer[];
 };
 
 export const DEFAULT_CONFIG: Config = {
@@ -48,6 +51,7 @@ export const DEFAULT_CONFIG: Config = {
   quickActions: [],
   reviewEnabled: false,
   reviewModel: '',
+  mcpServers: [],
 };
 
 const KEY = 'whalebot.config.v2';
@@ -72,6 +76,7 @@ export async function loadConfig(): Promise<Config> {
     apiKey: apiKey || base.apiKey || '',
     execToken: execToken || base.execToken,
     quickActions: Array.isArray(base.quickActions) ? base.quickActions : [],
+    mcpServers: Array.isArray(base.mcpServers) ? base.mcpServers : [],
     toolDisplay: base.toolDisplay ?? 'show',
   };
 }
