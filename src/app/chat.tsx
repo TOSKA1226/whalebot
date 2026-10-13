@@ -68,6 +68,7 @@ export default function ChatScreen() {
 
   const main = agents.find((a) => a.id === activeAgentId);
   const sessionTitle = sessions.find((x) => x.id === currentSessionId)?.title;
+  const modelName = main?.model?.trim() || cfg.model;
   const members = roomAgents.filter((a) => a.id !== activeAgentId);
   const mainPresence = presenceOf(activeAgentId);
 
@@ -124,6 +125,7 @@ export default function ChatScreen() {
           <Text style={s.sub} numberOfLines={1}>
             {sessionTitle ? `${sessionTitle} · ` : ''}
             {t(`presence.${mainPresence}` as 'presence.online')}
+            {` · ${modelName}`}
             {members.length ? ` · ${t('room.participants')}：${members.length + 1}` : ` · ${t('room.title')}`}
           </Text>
         </View>
