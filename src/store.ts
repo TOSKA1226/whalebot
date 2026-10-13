@@ -14,6 +14,10 @@ export type Agent = {
   persona: string;
   /** 分组（工作 / 生活 / 学习…） */
   group: string;
+  /** 该助手单独使用的模型；留空则用全局设置 */
+  model?: string;
+  /** 该助手单独使用的接口地址；留空则用全局设置 */
+  baseUrl?: string;
   createdAt: number;
 };
 
@@ -116,6 +120,8 @@ export async function upsertAgent(input: {
   description?: string;
   persona?: string;
   group?: string;
+  model?: string;
+  baseUrl?: string;
 }): Promise<Agent> {
   const items = await listAgents();
   const idx = input.id ? items.findIndex((a) => a.id === input.id) : -1;
@@ -126,6 +132,8 @@ export async function upsertAgent(input: {
       description: input.description ?? items[idx].description,
       persona: input.persona ?? items[idx].persona,
       group: input.group ?? items[idx].group,
+      model: input.model ?? items[idx].model,
+      baseUrl: input.baseUrl ?? items[idx].baseUrl,
     };
     items[idx] = merged;
     await write(K.agents, items);

@@ -12,15 +12,26 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../../app-state';
 import { nextDue, parseSchedule } from '../../scheduler';
+import { getSecret, setSecret } from '../../secrets';
 import * as store from '../../store';
 import { Btn, Row, SectionTitle } from '../../ui';
 
 export default function AgentProfile() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { t, activeAgentId, saveAgent, deleteAgent, switchAgent, reloadData } = useApp();
+  const { t, activeAgentId, saveAgent, deleteAgent, switchAgent, reloadData, refreshAgentKeys } =
+    useApp();
 
   const [agent, setAgent] = useState<store.Agent | undefined>();
-  const [draft, setDraft] = useState({ name: '', group: '', description: '', persona: '' });
+  const [draft, setDraft] = useState({
+    name: '',
+    group: '',
+    description: '',
+    persona: '',
+    model: '',
+    baseUrl: '',
+  });
+  const [apiKey, setApiKey] = useState('');
+  const [hasOwnKey, setHasOwnKey] = useState(false);
   const [data, setData] = useState<{
     memories: store.Memory[];
     skills: store.Skill[];
@@ -31,7 +42,19 @@ export default function AgentProfile() {
     const a = await store.getAgent(id);
     setAgent(a);
     if (a) {
-      setDraft({ name: a.name, group: a.group, description: a.description, persona: a.persona });
+      setDraft({
+        name: a.name,
+        group: a.group,
+        description: a.description,
+        persona: a.persona,
+        model: a.model ?? '',
+        baseUrl: a.baseUrl ?? '',
+      });
+    }
+    try {
+      setHasOwnKey(!!(await getSecret(`apikey.${id}`)));
+    } catch {
+      setHasOwnKey(false);
     }
     const [memories, skills, routines] = await Promise.all([
       store.listMemories(id),
@@ -88,11 +111,64 @@ export default function AgentProfile() {
           placeholder={t('agents.personaHint')}
         />
 
+        <SectionTitle>{t('agent.model')}</SectionTitle>
+        <TextInput
+          style={s.input}
+          value={draft.model}
+          onChangeText={(v) => setDraft({ ...draft, model: v })}
+          placeholder="deepseek-chat / deepseek-reasoner"
+          placeholderTextColor="#9a9a9e"
+          autoCapitalize="none"
+        />
+        <SectionTitle>{t('agent.baseUrl')}</SectionTitle>
+        <TextInput
+          style={s.input}
+          value={draft.baseUrl}
+          onChangeText={(v) => setDraft({ ...draft, baseUrl: v })}
+          placeholder="https://api.deepseek.com"
+          placeholderTextColor="#9a9a9e"
+          autoCapitalize="none"
+        />
+
+        <SectionTitle>
+          {t('agent.apiKey')}
+          {hasOwnKey ? `　${t('agent.keySet')}` : ''}
+        </SectionTitle>
+        <TextInput
+          style={s.input}
+          value={apiKey}
+          onChangeText={setApiKey}
+          placeholder="sk-…"
+          placeholderTextColor="#9a9a9e"
+          autoCapitalize="none"
+          autoCorrect={false}
+          secureTextEntry
+        />
+        <Text style={s.hint2}>{t('agent.keyHint')}</Text>
+        {hasOwnKey ? (
+          <Btn
+            label={t('agent.keyClear')}
+            kind="ghost"
+            onPress={async () => {
+              await setSecret(`apikey.${id}`, '');
+              setHasOwnKey(false);
+              setApiKey('');
+              await refreshAgentKeys();
+            }}
+            style={{ marginTop: 8 }}
+          />
+        ) : null}
+
         <Btn
           label={t('agents.save')}
           onPress={async () => {
             if (!agent) return;
             await saveAgent({ id: agent.id, ...draft });
+            if (apiKey.trim()) {
+              await setSecret(`apikey.${agent.id}`, apiKey.trim());
+              setApiKey('');
+            }
+            await refreshAgentKeys();
             await load();
             await reloadData();
           }}
@@ -267,6 +343,7 @@ const s = StyleSheet.create({
     paddingVertical: 10,
     fontSize: 15,
   },
+  hint2: { fontSize: 11, color: '#aaa', marginTop: 6, lineHeight: 16 },
   multi: { height: 150, textAlignVertical: 'top' },
   empty: { fontSize: 13, color: '#999', marginBottom: 8 },
   action: { fontSize: 13, color: '#0a84ff', fontWeight: '600' },
