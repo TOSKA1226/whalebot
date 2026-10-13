@@ -51,9 +51,11 @@ export default function HomeTab() {
               {t('budget.line', { used: usage.used, budget: usage.budget })}
             </Text>
           ) : null}
-          <Text style={s.line}>
-            {`记忆 ${data.memories.length} · 技能 ${data.skills.length} · 例程 ${data.routines.length}`}
-          </Text>
+          <TouchableOpacity onPress={() => router.push('/data')}>
+            <Text style={[s.line, { color: '#0a84ff' }]}>
+              {`记忆 ${data.memories.length} · 技能 ${data.skills.length} · 例程 ${data.routines.length}  ›`}
+            </Text>
+          </TouchableOpacity>
         </Card>
 
         <View style={s.sectionRow}>
