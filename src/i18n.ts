@@ -118,6 +118,10 @@ const dict = {
   'room.joined': { zh: '已加入', en: 'joined' },
   'room.notjoined': { zh: '未加入', en: 'not joined' },
   'agents.ungrouped': { zh: '未分组', en: 'Ungrouped' },
+  'chat.nokey': {
+    zh: '还没有配置 API Key，点这里去设置（填完要点「保存」）',
+    en: 'No API key yet — tap to open Settings (remember to tap Save)',
+  },
   'chat.clear': { zh: '清空', en: 'Clear' },
   'btn.memory': { zh: '资料', en: 'Data' },
   'mem.title': { zh: '记忆 / 技能 / 例程', en: 'Memories / Skills / Routines' },

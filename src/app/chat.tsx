@@ -122,13 +122,19 @@ export default function ChatScreen() {
             {t(`presence.${mainPresence}` as 'presence.online')}
             {members.length ? ` · ${t('room.participants')}：${members.length + 1}` : ` · ${t('room.title')}`}
           </Text>
-          {/* 临时调试：确认键盘事件与底部安全区到底拿到什么（下个版本删掉） */}
-          <Text style={s.sub}>{`dbg kb=${kbHeight} inset=${insets.bottom}`}</Text>
         </View>
         <TouchableOpacity onPress={clearChat} style={s.iconBtn}>
           <Text style={s.iconTxt}>{t('chat.clear')}</Text>
         </TouchableOpacity>
       </View>
+
+      {!cfg.apiKey ? (
+        <TouchableOpacity style={s.banner} onPress={() => router.push('/settings')}>
+          <Ionicons name="key-outline" size={14} color="#8a6d1f" />
+          <Text style={s.bannerTxt}>{t('chat.nokey')}</Text>
+          <Ionicons name="chevron-forward" size={14} color="#8a6d1f" />
+        </TouchableOpacity>
+      ) : null}
 
       {/* 参与者条 */}
       <ScrollView
@@ -368,6 +374,18 @@ const s = StyleSheet.create({
   bubbleError: { backgroundColor: '#ffe9e9' },
   errRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
   bubbleTxt: { fontSize: 15, lineHeight: 21, color: '#111' },
+  banner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginHorizontal: 12,
+    marginBottom: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: '#fff8e6',
+    borderRadius: 10,
+  },
+  bannerTxt: { flex: 1, fontSize: 12, color: '#8a6d1f' },
   sysRow: {
     flexDirection: 'row',
     alignItems: 'center',
