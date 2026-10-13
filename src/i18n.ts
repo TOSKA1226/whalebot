@@ -130,6 +130,15 @@ const dict = {
   'room.joined': { zh: '已加入', en: 'joined' },
   'room.notjoined': { zh: '未加入', en: 'not joined' },
   'agents.ungrouped': { zh: '未分组', en: 'Ungrouped' },
+  'review.verdict': { zh: '自动复核：{v}（{why}）', en: 'Auto-review: {v} ({why})' },
+  'review.failed': { zh: '自动复核失败，改为询问你：{e}', en: 'Auto-review failed, asking you: {e}' },
+  'review.on': { zh: '已开启', en: 'on' },
+  'review.off': { zh: '未开启', en: 'off' },
+  'review.model': { zh: '复核用模型（留空 = 助手自己的模型）', en: 'Review model (blank = agent model)' },
+  'review.note': {
+    zh: '开启后，高风险工具会先让这个模型判断意图：allow 直接放行、ask 问你、deny 直接拒绝。判断失败一律改为询问。',
+    en: 'When on, high-risk tools are first judged by this model: allow runs it, ask prompts you, deny blocks it. Failures fall back to asking.',
+  },
   'chat.nokey': {
     zh: '还没有配置 API Key，点这里去设置（填完要点「保存」）',
     en: 'No API key yet — tap to open Settings (remember to tap Save)',

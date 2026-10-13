@@ -29,6 +29,10 @@ export type Config = {
   toolDisplay: ToolDisplay;
   /** 首页快捷指令 */
   quickActions: QuickAction[];
+  /** 高风险工具先由便宜模型复核意图 */
+  reviewEnabled: boolean;
+  /** 复核用的模型；留空则用当前助手的模型 */
+  reviewModel: string;
 };
 
 export const DEFAULT_CONFIG: Config = {
@@ -42,6 +46,8 @@ export const DEFAULT_CONFIG: Config = {
   roomAgentIds: [],
   toolDisplay: 'show',
   quickActions: [],
+  reviewEnabled: false,
+  reviewModel: '',
 };
 
 const KEY = 'whalebot.config.v2';
