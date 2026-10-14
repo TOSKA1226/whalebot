@@ -32,7 +32,16 @@ export default function SettingsTab() {
     mcpTools,
     providers,
     agents,
+    permRules,
+    runs,
+    credentials,
+    bg,
+    toggleBackground,
   } = useApp();
+  const ruleCount = Object.values(permRules ?? {}).reduce(
+    (n, tools) => n + Object.keys(tools ?? {}).length,
+    0,
+  );
   const groupCount = useGroups(agents, t('agents.ungrouped')).length;
   const [draft, setDraft] = useState<Config>(cfg);
 
@@ -120,6 +129,38 @@ export default function SettingsTab() {
           </>
         ) : null}
         <Text style={s.hint2}>{t('budget.limitHint')}</Text>
+
+        <Row
+          title={t('perm.title')}
+          desc={t('settings.perm.desc', { n: ruleCount })}
+          onPress={() => router.push('/permissions')}
+        />
+        <Row
+          title={t('runs.title')}
+          desc={t('settings.runs.desc', { n: runs.length })}
+          onPress={() => router.push('/runs')}
+        />
+        <Row
+          title={t('vault.title')}
+          desc={t('settings.vault.desc', { n: credentials.length })}
+          onPress={() => router.push('/vault')}
+        />
+
+        <Text style={s.label}>{t('bg.title')}</Text>
+        <View style={s.langRow}>
+          {[true, false].map((v) => (
+            <Btn
+              key={String(v)}
+              label={v ? t('bg.on') : t('bg.off')}
+              kind={bg.registered === v ? 'primary' : 'ghost'}
+              style={{ flex: 1 }}
+              onPress={() => void toggleBackground(v)}
+            />
+          ))}
+        </View>
+        <Text style={s.hint2}>
+          {bg.available ? t('bg.note') : t('bg.unavailable')}
+        </Text>
 
         <Row
           title={t('settings.providers')}
