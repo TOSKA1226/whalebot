@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../../app-state';
+import { Avatar } from '../../avatar';
 import { CollapsibleGroups, useGroups } from '../../groupList';
 import { Btn, Header, Row, SectionTitle } from '../../ui';
 
@@ -180,7 +181,7 @@ function NewChatSheet({
   onCreateRoom: (name: string, leaderId: string, memberIds: string[]) => Promise<void>;
   onPickAgent: (id: string) => Promise<void>;
 }) {
-  const { t, agents, activeAgentId } = useApp();
+  const { t, agents, activeAgentId, cfg, presenceOf } = useApp();
   const [tab, setTab] = useState<'group' | 'single'>('group');
   const [name, setName] = useState('');
   const [leaderId, setLeaderId] = useState('');
@@ -282,6 +283,13 @@ function NewChatSheet({
                           size={20}
                           color={picked ? '#0a84ff' : '#c7c7cc'}
                         />
+                        <Avatar
+                          agent={a}
+                          agents={agents}
+                          overrides={cfg.groupColors}
+                          presence={presenceOf(a.id)}
+                          size={28}
+                        />
                         <View style={{ flex: 1 }}>
                           <Text style={s.pickName}>
                             {a.name}
@@ -328,6 +336,15 @@ function NewChatSheet({
                 }
                 renderItem={(a) => (
                   <Row
+                    left={
+                      <Avatar
+                        agent={a}
+                        agents={agents}
+                        overrides={cfg.groupColors}
+                        presence={presenceOf(a.id)}
+                        size={30}
+                      />
+                    }
                     title={a.name}
                     desc={a.description || a.group}
                     onPress={async () => {

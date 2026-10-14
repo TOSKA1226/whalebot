@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../../app-state';
+import { useGroups } from '../../groupList';
 import type { Config, ToolDisplay } from '../../config';
 import type { Lang } from '../../i18n';
 import { Btn, Card, Header, Row, SectionTitle } from '../../ui';
@@ -29,7 +30,10 @@ export default function SettingsTab() {
     usage,
     data,
     mcpTools,
+    providers,
+    agents,
   } = useApp();
+  const groupCount = useGroups(agents, t('agents.ungrouped')).length;
   const [draft, setDraft] = useState<Config>(cfg);
 
   const set = (patch: Partial<Config>) => setDraft({ ...draft, ...patch });
@@ -116,6 +120,17 @@ export default function SettingsTab() {
           </>
         ) : null}
         <Text style={s.hint2}>{t('budget.limitHint')}</Text>
+
+        <Row
+          title={t('settings.providers')}
+          desc={t('settings.providers.desc', { n: providers.length })}
+          onPress={() => router.push('/providers')}
+        />
+        <Row
+          title={t('settings.groups')}
+          desc={t('settings.groups.desc', { n: groupCount })}
+          onPress={() => router.push('/groups')}
+        />
 
         <Row
           title={t('mcp.entry')}

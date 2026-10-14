@@ -23,11 +23,14 @@ export function CollapsibleGroups({
   renderItem,
   defaultOpen,
   toggleLabels,
+  renderGroupRight,
 }: {
   groups: [string, Agent[]][];
   renderItem: (a: Agent, group: string) => React.ReactNode;
   defaultOpen?: (group: string, items: Agent[]) => boolean;
   toggleLabels?: { expand: string; collapse: string };
+  /** 分组标题右边挂点东西：色系预览、绑定的供应商名… */
+  renderGroupRight?: (group: string, items: Agent[]) => React.ReactNode;
 }) {
   const [open, setOpen] = useState<Record<string, boolean>>(() => {
     const init: Record<string, boolean> = {};
@@ -72,6 +75,7 @@ export function CollapsibleGroups({
                 <Text style={g.badgeTxt}>{items.length}</Text>
               </View>
               <View style={{ flex: 1 }} />
+              {renderGroupRight ? renderGroupRight(name, items) : null}
             </TouchableOpacity>
             {isOpen ? items.map((a) => <View key={a.id}>{renderItem(a, name)}</View>) : null}
           </View>

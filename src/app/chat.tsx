@@ -16,6 +16,7 @@ import {
 import { KeyboardAvoidingView } from '../kav';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp, type Bubble } from '../app-state';
+import { Avatar } from '../avatar';
 import { CollapsibleGroups, useGroups } from '../groupList';
 import { Btn, Dot } from '../ui';
 
@@ -55,6 +56,7 @@ export default function ChatScreen() {
     currentRoom,
     currentRoomAgents,
     updateRoom,
+    providerInfo,
   } = useApp();
   const [input, setInput] = useState('');
   const [picking, setPicking] = useState(false);
@@ -72,6 +74,7 @@ export default function ChatScreen() {
   }, [bubbles.length, kb]);
 
   const inRoom = !!currentRoom;
+  const agentByName = (n?: string) => (n ? agents.find((a) => a.name === n) : undefined);
   const roster = inRoom ? currentRoomAgents : agents.filter((a) => a.id === activeAgentId);
   const main = inRoom
     ? currentRoomAgents.find((a) => a.id === currentRoom?.leaderId)
@@ -167,6 +170,14 @@ export default function ChatScreen() {
             <View style={s.titleRow}>
               {inRoom ? (
                 <Ionicons name="people" size={16} color="#0a84ff" />
+              ) : main ? (
+                <Avatar
+                  agent={main}
+                  agents={agents}
+                  overrides={cfg.groupColors}
+                  presence={mainPresence}
+                  size={24}
+                />
               ) : (
                 <Dot state={mainPresence} />
               )}
@@ -178,7 +189,9 @@ export default function ChatScreen() {
                 ? `${t('room.leaderTag')} ${main?.name ?? '—'} · ${t('room.memberCount', {
                     n: roster.length,
                   })}`
-                : `${t(`presence.${mainPresence}` as 'presence.online')} · ${modelName}`}
+                : `${t(`presence.${mainPresence}` as 'presence.online')} · ${modelName} · ${
+                    providerInfo(main).provider?.name ?? t('src.global')
+                  }`}
             </Text>
           </View>
           {inRoom ? (
@@ -210,11 +223,14 @@ export default function ChatScreen() {
               const isLeader = a.id === currentRoom?.leaderId;
               return (
                 <View key={a.id} style={[s.chip, isLeader && s.chipLeader]}>
-                  {isLeader ? (
-                    <Ionicons name="star" size={11} color="#f5a623" />
-                  ) : (
-                    <Dot state={presenceOf(a.id)} size={8} />
-                  )}
+                  <Avatar
+                    agent={a}
+                    agents={agents}
+                    overrides={cfg.groupColors}
+                    presence={presenceOf(a.id)}
+                    size={18}
+                  />
+                  {isLeader ? <Ionicons name="star" size={11} color="#f5a623" /> : null}
                   <Text style={[s.chipTxt, isLeader && { color: '#8a6d1f', fontWeight: '600' }]}>
                     {a.name}
                   </Text>
@@ -247,7 +263,7 @@ export default function ChatScreen() {
                 t={t}
               />
             ) : (
-              <RowBubble key={it.key} b={it.b} t={t} />
+              <RowBubble key={it.key} b={it.b} t={t} who={agentByName(it.b.speaker)} agents={agents} />
             ),
           )}
           {busy ? (
@@ -273,7 +289,13 @@ export default function ChatScreen() {
                     style={s.mentionRow}
                     onPress={() => insertMention(a.name)}
                   >
-                    <Dot state={presenceOf(a.id)} size={8} />
+                    <Avatar
+                      agent={a}
+                      agents={agents}
+                      overrides={cfg.groupColors}
+                      presence={presenceOf(a.id)}
+                      size={22}
+                    />
                     <Text style={s.mentionName}>{a.name}</Text>
                     {a.id === currentRoom?.leaderId ? (
                       <Ionicons name="star" size={11} color="#f5a623" />
@@ -428,7 +450,18 @@ function PhaseTag({ phase, t }: { phase: Bubble['phase']; t: (k: any) => string 
 }
 
 /** 普通气泡（用户/助手/工具/错误/系统） */
-function RowBubble({ b, t }: { b: Bubble; t: (k: any) => string }) {
+function RowBubble({
+  b,
+  t,
+  who,
+  agents,
+}: {
+  b: Bubble;
+  t: (k: any) => string;
+  who?: import('../store').Agent;
+  agents?: import('../store').Agent[];
+}) {
+  void agents;
   if (b.role === 'tool') return <ToolCard b={b} />;
   if (b.role === 'system') {
     return (
@@ -456,6 +489,7 @@ function RowBubble({ b, t }: { b: Bubble; t: (k: any) => string }) {
     <View style={[s.bubbleWrap, mine ? { alignItems: 'flex-end' } : null]}>
       {!mine && (b.speaker || b.phase) ? (
         <View style={s.metaRow}>
+          {who ? <Avatar agent={who} size={18} /> : null}
           {b.speaker ? <Text style={s.speaker}>{b.speaker}</Text> : null}
           <PhaseTag phase={b.phase} t={t} />
         </View>
