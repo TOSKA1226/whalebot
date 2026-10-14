@@ -26,6 +26,18 @@ import type { Session, SessionBubble } from './sessions';
 import { callTool, listTools, type McpTool } from './mcp';
 import { reviewToolCall } from './review';
 import { getSecret } from './secrets';
+import * as rooms from './rooms';
+import type { Room } from './rooms';
+import {
+  dispatchPrompt,
+  mentionPrompt,
+  parseAssignments,
+  parseMentions,
+  stripPlanBlock,
+  summaryPrompt,
+  workerPrompt,
+  type Member,
+} from './orchestra';
 import {
   cancelAllScheduled,
   cancelScheduled,
@@ -95,6 +107,22 @@ type AppState = {
   mcpStatus: Record<string, string>;
   /** 重新连接所有 MCP 服务器 */
   refreshMcp: () => Promise<void>;
+  /** 助手群列表 */
+  roomList: Room[];
+  /** 当前会话所属的群（单聊时为 undefined） */
+  currentRoom?: Room;
+  /** 当前群里的助手（组长排第一） */
+  currentRoomAgents: store.Agent[];
+  /** 新建一个群，并开一段属于它的会话 */
+  createRoom: (name: string, leaderId: string, memberIds: string[]) => Promise<Room>;
+  /** 改群名 / 换组长 / 加减成员 */
+  updateRoom: (id: string, patch: { name?: string; leaderId?: string; memberIds?: string[] }) => Promise<void>;
+  /** 解散群 */
+  deleteRoom: (id: string) => Promise<void>;
+  /** 打开某个群的会话 */
+  openRoom: (roomId: string) => Promise<void>;
+  /** 某助手这一轮实际生效的 token 上限（null = 不限制） */
+  limitFor: (agentId: string) => number | null;
 };
 
 const AppCtx = createContext<AppState | null>(null);
@@ -150,7 +178,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   /** 会话列表（持久化）与当前会话 */
   const [sessionList, setSessionList] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string>('');
+  const [roomList, setRoomList] = useState<Room[]>([]);
+  const [currentRoomId, setCurrentRoomId] = useState<string>('');
   const sessionIdRef = useRef<string>('');
+  const roomIdRef = useRef<string>('');
+  const roomsRef = useRef<Room[]>([]);
   const titleRef = useRef<string>('');
   const lastUserTextRef = useRef<string>('');
   const [pending, setPending] = useState<
@@ -174,11 +206,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const bubblesRef = useRef<Bubble[]>([]);
   const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 群协作阶段标记（气泡上显示「组长派发 / 成员汇报 / 组长总结」） */
+  const phaseRef = useRef<Bubble['phase']>(undefined);
+  /** 当前这次 run 里助手气泡的 id（组长派发完要把 JSON 洗掉） */
+  const captureBubbleRef = useRef<string | null>(null);
 
   const push = useCallback(
-    (role: Bubble['role'], text: string, speaker?: string, tool?: Bubble['tool']) => {
+    (
+      role: Bubble['role'],
+      text: string,
+      speaker?: string,
+      tool?: Bubble['tool'],
+      phase?: Bubble['phase'],
+    ) => {
       const id = nextId();
-      setBubbles((prev) => [...prev, { id, role, text, speaker, tool }]);
+      setBubbles((prev) => [...prev, { id, role, text, speaker, tool, phase }]);
       return id;
     },
     [],
@@ -197,6 +239,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         id,
         title: titleRef.current,
         agentId: agentRef.current,
+        roomId: roomIdRef.current || undefined,
         createdAt: 0,
         updatedAt: Date.now(),
         bubbles: [] as SessionBubble[],
@@ -306,7 +349,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         case 'assistant_delta': {
           lastTextRef.current += e.text;
           if (!streamIdRef.current) {
-            streamIdRef.current = push('assistant', '', speakerRef.current);
+            streamIdRef.current = push(
+              'assistant',
+              '',
+              speakerRef.current,
+              undefined,
+              phaseRef.current,
+            );
+            captureBubbleRef.current = streamIdRef.current;
           }
           appendTo(streamIdRef.current, e.text);
           break;
@@ -319,8 +369,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           toolIdRef.current = push(
             'tool',
             `${e.name}  ${JSON.stringify(e.args).slice(0, 300)}`,
-            undefined,
+            speakerRef.current,
             { name: e.name, args: e.args },
+            phaseRef.current,
           );
           break;
         case 'tool_result': {
@@ -390,100 +441,237 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setData({ memories, skills, routines });
   }, []);
 
-  const runTurn = useCallback(
-    async (userText: string, opts: { silentBubble?: boolean; agentId?: string } = {}) => {
-      const who = opts.agentId ?? agentRef.current;
-      const c = await effectiveCfg(who);
+  /** 某助手这一轮实际生效的 token 上限（null = 不限制） */
+  const limitFor = useCallback((agentId: string): number | null => {
+    const c = cfgRef.current;
+    const a = agentsRef.current.find((x) => x.id === agentId);
+    const mode = a?.tokenLimitMode ?? 'global';
+    if (mode === 'unlimited') return null;
+    if (mode === 'custom') return a?.tokenLimit && a.tokenLimit > 0 ? a.tokenLimit : null;
+    return c.tokenLimitEnabled ? c.tokenLimit : null;
+  }, []);
+
+  /** 跑一个外接 MCP 工具 */
+  const runMcp = useCallback(async (serverId: string, tool: string, args: any) => {
+    const srv = cfgRef.current.mcpServers.find((x) => x.id === serverId);
+    if (!srv) return { ok: false, text: '找不到这个 MCP 服务器（可能已被删除）' };
+    try {
+      return await callTool(srv, tool, args);
+    } catch (e: any) {
+      return { ok: false, text: String(e?.message ?? e) };
+    }
+  }, []);
+
+  /**
+   * 让「一个助手」说一轮话。群协作里会被反复调用：
+   * 默认给它一段干净的上下文（各干各的，互不污染），单聊时沿用同一段历史。
+   */
+  const runOne = useCallback(
+    async (
+      agentId: string,
+      prompt: string,
+      opts: { phase?: Bubble['phase']; fresh?: boolean } = {},
+    ): Promise<{ text: string; bubbleId: string | null; messages: Msg[] }> => {
+      const a = agentsRef.current.find((x) => x.id === agentId);
+      const c = await effectiveCfg(agentId);
+      speakerRef.current = a?.name ?? agentId;
+      phaseRef.current = opts.phase;
       lastTextRef.current = '';
       streamIdRef.current = null;
       toolIdRef.current = null;
-      lastUserTextRef.current = userText;
+      captureBubbleRef.current = null;
+      setActiveSpeakerId(agentId);
+      const limit = limitFor(agentId);
+      let messages: Msg[] = historyRef.current;
+      try {
+        messages = await runAgent({
+          cfg: c,
+          lang: c.lang,
+          agentId,
+          history: opts.fresh === false ? historyRef.current : initialHistory(c.lang),
+          userText: prompt,
+          onEvent,
+          approve,
+          extraTools: mcpToolSpecs(mcpToolsRef.current),
+          runMcpTool: runMcp,
+          budgetTokens: limit ?? undefined,
+          onBudget:
+            limit == null
+              ? undefined
+              : (used, budget) =>
+                  new Promise<number>((resolve) => setBudgetAsk({ used, budget, resolve })),
+        });
+        setAgentHealth((h) => ({ ...h, [agentId]: 'ok' }));
+      } catch (e: any) {
+        push('error', `${a?.name ?? agentId}：${String(e?.message ?? e)}`);
+        setAgentHealth((h) => ({ ...h, [agentId]: 'error' }));
+      } finally {
+        speakerRef.current = undefined;
+        phaseRef.current = undefined;
+        setActiveSpeakerId(null);
+      }
+      return { text: lastTextRef.current, bubbleId: captureBubbleRef.current, messages };
+    },
+    [approve, effectiveCfg, limitFor, onEvent, push, runMcp],
+  );
+
+  /**
+   * 群聊一轮：
+   *   用户下令 → 组长拆活 → 各成员单独向用户汇报 → 成果汇总回组长 → 组长在群里总结。
+   * 如果用户用 @ 点名，就只有被点到的助手回答（组长和其他人都不插话）。
+   */
+  const runRoomTurn = useCallback(
+    async (userText: string, opts: { silentBubble?: boolean } = {}) => {
+      const room = roomsRef.current.find((r) => r.id === roomIdRef.current);
+      const roster = room
+        ? rooms
+            .roomAgentIds(room)
+            .map((id) => agentsRef.current.find((a) => a.id === id))
+            .filter((a): a is store.Agent => !!a)
+        : [];
+      // 群被解散、成员被删光：退化成单聊
+      if (!room || !roster.length) {
+        roomIdRef.current = '';
+        setCurrentRoomId('');
+        return runOne(agentRef.current, userText, { fresh: false });
+      }
+      const leader = roster.find((a) => a.id === room.leaderId) ?? roster[0];
+      const members = roster.filter((a) => a.id !== leader.id);
+      const asMember = (x: store.Agent): Member => ({
+        id: x.id,
+        name: x.name,
+        description: x.description,
+      });
+
       if (!opts.silentBubble) push('user', userText);
       if (!titleRef.current) {
         titleRef.current = sessions.titleFrom(userText, tRef.current('chats.untitled'));
       }
-      setBusy(true);
-      setActiveSpeakerId(who);
-      try {
-        const msgs = await runAgent({
-          cfg: c,
-          lang: c.lang,
-          agentId: who,
-          history: historyRef.current,
-          userText,
-          onEvent,
-          approve,
-          extraTools: mcpToolSpecs(mcpToolsRef.current),
-          runMcpTool: async (serverId, tool, args) => {
-            const srv = cfgRef.current.mcpServers.find((x) => x.id === serverId);
-            if (!srv) return { ok: false, text: '找不到这个 MCP 服务器（可能已被删除）' };
-            try {
-              return await callTool(srv, tool, args);
-            } catch (e: any) {
-              return { ok: false, text: String(e?.message ?? e) };
-            }
-          },
-          budgetTokens: 200000,
-          onBudget: (used, budget) =>
-            new Promise<number>((resolve) => setBudgetAsk({ used, budget, resolve })),
+      lastUserTextRef.current = userText;
+      historyRef.current = [...historyRef.current, { role: 'user', content: userText }];
+
+      // 1) 点名：只叫被点到的助手
+      const mentioned = parseMentions(userText, roster.map(asMember));
+      if (mentioned.length) {
+        for (const who of mentioned) {
+          const a = roster.find((x) => x.id === who.id);
+          if (!a) continue;
+          const out = await runOne(
+            a.id,
+            mentionPrompt(
+              userText,
+              mentioned.map((x) => x.name),
+              a.name,
+            ),
+            { phase: 'work' },
+          );
+          historyRef.current = [
+            ...historyRef.current,
+            { role: 'assistant', content: `[${a.name}] ${out.text}` },
+          ];
+        }
+        return;
+      }
+
+      // 群里只有组长一个人 → 就是普通对话
+      if (!members.length) {
+        const out = await runOne(leader.id, userText);
+        historyRef.current = [...historyRef.current, { role: 'assistant', content: out.text }];
+        return;
+      }
+
+      // 2) 组长拆活
+      const plan = await runOne(
+        leader.id,
+        dispatchPrompt(userText, leader.name, members.map(asMember)),
+        { phase: 'plan' },
+      );
+      let visiblePlan = plan.text;
+      if (plan.bubbleId) {
+        const cleaned = stripPlanBlock(plan.text);
+        visiblePlan = cleaned;
+        if (cleaned !== plan.text) {
+          const id = plan.bubbleId;
+          setBubbles((prev) =>
+            prev.map((b) =>
+              b.id === id ? { ...b, text: cleaned || tRef.current('orchestra.plan') } : b,
+            ),
+          );
+        }
+      }
+      historyRef.current = [
+        ...historyRef.current,
+        { role: 'assistant', content: `[${leader.name}] ${visiblePlan}` },
+      ];
+
+      const tasks = parseAssignments(plan.text, members.map(asMember));
+      if (!tasks.length) {
+        push('system', tRef.current('orchestra.noWorker'));
+        return;
+      }
+      push(
+        'system',
+        tasks
+          .map((x) => tRef.current('orchestra.planLine', { name: x.agent, task: x.task }))
+          .join('\n'),
+      );
+
+      // 3) 成员各自干活，各自向用户汇报
+      const results: { name: string; task: string; output: string }[] = [];
+      for (const task of tasks) {
+        const a = members.find((x) => x.name === task.agent);
+        if (!a) continue;
+        const out = await runOne(a.id, workerPrompt(userText, task.task, leader.name, a.name), {
+          phase: 'work',
         });
-        historyRef.current = msgs;
-        setAgentHealth((h) => ({ ...h, [who]: 'ok' }));
-      } catch (e: any) {
-        push('error', String(e?.message ?? e));
-        setAgentHealth((h) => ({ ...h, [who]: 'error' }));
+        results.push({ name: a.name, task: task.task, output: out.text });
+        historyRef.current = [
+          ...historyRef.current,
+          { role: 'assistant', content: `[${a.name}] ${out.text}` },
+        ];
+      }
+      if (!results.length) return;
+
+      // 4) 成果交回组长，由组长向用户总结
+      push('system', tRef.current('orchestra.collect', { n: results.length }));
+      const final = await runOne(leader.id, summaryPrompt(userText, leader.name, results), {
+        phase: 'summary',
+      });
+      historyRef.current = [
+        ...historyRef.current,
+        { role: 'assistant', content: `[${leader.name}] ${final.text}` },
+      ];
+    },
+    [push, runOne],
+  );
+
+  const runTurn = useCallback(
+    async (userText: string, opts: { silentBubble?: boolean; agentId?: string } = {}) => {
+      setBusy(true);
+      try {
+        // 群聊会话且没有指定助手 → 走群协作编排
+        if (roomIdRef.current && !opts.agentId) {
+          await runRoomTurn(userText, opts);
+          return lastTextRef.current;
+        }
+        const who = opts.agentId ?? agentRef.current;
+        lastUserTextRef.current = userText;
+        if (!opts.silentBubble) push('user', userText);
+        if (!titleRef.current) {
+          titleRef.current = sessions.titleFrom(userText, tRef.current('chats.untitled'));
+        }
+        const out = await runOne(who, userText, { fresh: false });
+        if (out.messages.length) historyRef.current = out.messages;
+        return out.text;
       } finally {
         setBusy(false);
         setActiveSpeakerId(null);
         persistSession(true);
         await reloadData();
+        await syncScheduled();
       }
-
-      // 房间：@点名让其他成员在同一会话里发言
-      const mentioned = Array.from(userText.matchAll(/@([^\s@，,。.！!？?、]+)/g)).map(
-        (m) => m[1],
-      );
-      await syncScheduled();
-      if (mentioned.length && !opts.agentId) {
-        const mainId = agentRef.current;
-        for (const name of mentioned) {
-          const member = agentsRef.current.find(
-            (a) => a.id !== mainId && (a.name === name || a.name.startsWith(name)),
-          );
-          if (!member) continue;
-          speakerRef.current = member.name;
-          lastTextRef.current = '';
-          setActiveSpeakerId(member.id);
-          try {
-            await runAgent({
-              cfg: await effectiveCfg(member.id),
-              lang: c.lang,
-              agentId: member.id,
-              history: historyRef.current,
-              userText: `[房间协作] 用户点名了 @${member.name}，请以你的身份回应。用户原话：${userText}`,
-              onEvent,
-              approve,
-              budgetTokens: 200000,
-            });
-            historyRef.current = [
-              ...historyRef.current,
-              { role: 'assistant', content: `[${member.name}] ${lastTextRef.current}` },
-            ];
-            setAgentHealth((h) => ({ ...h, [member.id]: 'ok' }));
-          } catch (e: any) {
-            push('error', `${member.name}：${String(e?.message ?? e)}`);
-            setAgentHealth((h) => ({ ...h, [member.id]: 'error' }));
-          } finally {
-            speakerRef.current = undefined;
-            setActiveSpeakerId(null);
-          }
-        }
-        await reloadData();
-      }
-
-      return lastTextRef.current;
     },
-    [approve, effectiveCfg, onEvent, persistSession, push, reloadData, syncScheduled],
+    [persistSession, push, reloadData, runOne, runRoomTurn, syncScheduled],
   );
 
   const send = useCallback(
@@ -511,10 +699,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [cfg.lang, cfg.apiKey, checkHealth, refreshMcp],
   );
 
-  /** 开一段新会话 */
-  const startSession = useCallback(async (agentId: string, greeting: string) => {
+  /** 开一段新会话（roomId 有值 = 群聊会话） */
+  const startSession = useCallback(async (agentId: string, greeting: string, roomId?: string) => {
     const sid = sessions.newSessionId();
     sessionIdRef.current = sid;
+    roomIdRef.current = roomId ?? '';
+    setCurrentRoomId(roomId ?? '');
     titleRef.current = '';
     setCurrentSessionId(sid);
     setBubbles([{ id: nextId(), role: 'system', text: greeting }]);
@@ -523,6 +713,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       id: sid,
       title: greeting,
       agentId,
+      roomId,
       createdAt: Date.now(),
       updatedAt: Date.now(),
       bubbles: [],
@@ -535,12 +726,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await startSession(agentRef.current, tRef.current('app.greeting'));
   }, [startSession]);
 
-  /** 打开已有会话（会连同它的助手一起切过去） */
+  /** 打开已有会话（会连同它的助手/群一起切过去） */
   const openSession = useCallback(async (id: string) => {
     const sess = await sessions.getSession(id);
     if (!sess) return;
     sessionIdRef.current = sess.id;
     titleRef.current = sess.title;
+    roomIdRef.current = sess.roomId ?? '';
+    setCurrentRoomId(sess.roomId ?? '');
     setCurrentSessionId(sess.id);
     setBubbles(
       sess.bubbles?.length
@@ -559,6 +752,71 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       await reloadData();
     }
   }, [reloadData]);
+
+  /* ---------------- 助手群 ---------------- */
+
+  const createRoom = useCallback(
+    async (name: string, leaderId: string, memberIds: string[]) => {
+      const r = await rooms.upsertRoom({ name, leaderId, memberIds });
+      const list = await rooms.listRooms();
+      roomsRef.current = list;
+      setRoomList(list);
+      if (leaderId !== agentRef.current) {
+        agentRef.current = leaderId;
+        setToolAgent(leaderId);
+        const nextCfg = { ...cfgRef.current, activeAgentId: leaderId };
+        await saveConfig(nextCfg);
+        setCfg(nextCfg);
+      }
+      await startSession(leaderId, `群「${r.name}」已创建`, r.id);
+      return r;
+    },
+    [startSession],
+  );
+
+  const updateRoom = useCallback(
+    async (
+      id: string,
+      patch: { name?: string; leaderId?: string; memberIds?: string[] },
+    ) => {
+      const cur = roomsRef.current.find((r) => r.id === id);
+      if (!cur) return;
+      await rooms.upsertRoom({
+        id,
+        name: patch.name ?? cur.name,
+        leaderId: patch.leaderId ?? cur.leaderId,
+        memberIds: patch.memberIds ?? cur.memberIds,
+      });
+      const list = await rooms.listRooms();
+      roomsRef.current = list;
+      setRoomList(list);
+    },
+    [],
+  );
+
+  const openRoom = useCallback(
+    async (roomId: string) => {
+      const sess = await sessions.latestSessionOfRoom(roomId);
+      if (sess) {
+        await openSession(sess.id);
+        return;
+      }
+      const r = roomsRef.current.find((x) => x.id === roomId);
+      await startSession(r?.leaderId ?? agentRef.current, `群「${r?.name ?? ''}」`, roomId);
+    },
+    [openSession, startSession],
+  );
+
+  const deleteRoom = useCallback(
+    async (id: string) => {
+      await rooms.removeRoom(id);
+      const list = await rooms.listRooms();
+      roomsRef.current = list;
+      setRoomList(list);
+      if (roomIdRef.current === id) await newChat();
+    },
+    [newChat],
+  );
 
   const deleteSession = useCallback(
     async (id: string) => {
@@ -648,6 +906,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
       const list = await store.ensureAgents();
       diag('boot', `agents loaded (${list.length})`);
+      const roomItems = await rooms.listRooms();
+      roomsRef.current = roomItems;
+      setRoomList(roomItems);
+      diag('boot', `rooms loaded (${roomItems.length})`);
       const exists = list.some((a) => a.id === c.activeAgentId);
       const activeId = exists ? c.activeAgentId : (list[0]?.id ?? store.DEFAULT_AGENT_ID);
       const c2 = { ...c, activeAgentId: activeId };
@@ -658,13 +920,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       agentsRef.current = list;
       void refreshAgentKeys();
       setCfg(c2);
-      // 恢复上次的会话；没有就新建一段
+      // 恢复上次的会话（含群聊会话）；没有就新建一段
       const all = await sessions.listSessions();
-      const last = all.find((x) => x.agentId === activeId) ?? all[0];
+      const last = all[0];
       if (last) {
         sessionIdRef.current = last.id;
         titleRef.current = last.title;
+        roomIdRef.current = last.roomId ?? '';
+        setCurrentRoomId(last.roomId ?? '');
         setCurrentSessionId(last.id);
+        if (last.agentId && last.agentId !== agentRef.current) {
+          agentRef.current = last.agentId;
+          setToolAgent(last.agentId);
+        }
         setBubbles(
           last.bubbles?.length
             ? last.bubbles
@@ -785,6 +1053,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     mcpTools,
     mcpStatus,
     refreshMcp,
+    roomList,
+    currentRoom: roomList.find((r) => r.id === currentRoomId),
+    currentRoomAgents: (() => {
+      const r = roomList.find((x) => x.id === currentRoomId);
+      if (!r) return [];
+      return rooms
+        .roomAgentIds(r)
+        .map((id) => agents.find((a) => a.id === id))
+        .filter((a): a is store.Agent => !!a);
+    })(),
+    createRoom,
+    updateRoom,
+    deleteRoom,
+    openRoom,
+    limitFor,
   };
 
   return (

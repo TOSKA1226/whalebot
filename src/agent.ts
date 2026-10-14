@@ -150,7 +150,7 @@ export async function runAgent(params: {
 
     if (res.usage?.total_tokens) {
       used += Number(res.usage.total_tokens) || 0;
-      onEvent({ type: 'usage', used, budget: Number.isFinite(budget) ? budget : 0 });
+      onEvent({ type: 'usage', used, budget: Number.isFinite(budget) ? budget : -1 });
 
       if (Number.isFinite(budget) && used >= budget) {
         onEvent({ type: 'budget_exceeded', used, budget });
