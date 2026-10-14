@@ -88,6 +88,8 @@ export default function ChatScreen() {
   /** 附件（拍照/相册/文件），发送时先落到容器再交给模型 */
   const [attach, setAttach] = useState<PickedAttachment[]>([]);
   const [attachOpen, setAttachOpen] = useState(false);
+  /** 单聊时的「快捷指令」面板（房间模式下这个位置是 @ 点名） */
+  const [quickOpen, setQuickOpen] = useState(false);
   const [sending, setSending] = useState(false);
 
   const addAttachment = (a: PickedAttachment) => setAttach((prev) => [...prev, a]);
@@ -490,35 +492,32 @@ export default function ChatScreen() {
             </View>
           ) : null}
           <View style={s.inputRow}>
-            <TouchableOpacity style={s.atBtn} onPress={() => setAttachOpen(true)} disabled={busy}>
-              <Ionicons name="add" size={20} color="#0a84ff" />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[s.atBtn, recorderState.isRecording && s.micOn]}
-              onPress={() => void onMic()}
-              disabled={sttBusy}
-            >
-              {sttBusy ? (
-                <ActivityIndicator size="small" color="#0a84ff" />
-              ) : (
-                <Ionicons
-                  name={recorderState.isRecording ? 'stop' : 'mic'}
-                  size={18}
-                  color={recorderState.isRecording ? '#fff' : '#0a84ff'}
-                />
-              )}
-            </TouchableOpacity>
-            {inRoom ? (
+            {/* 左：附件 + 语音（两个等宽方块，中心对齐） */}
+            <View style={s.sideGroup}>
               <TouchableOpacity
-                style={s.atBtn}
-                onPress={() => {
-                  setInput((prev) => `${prev}@`);
-                  setMentionQ('');
-                }}
+                style={s.toolBtn}
+                onPress={() => setAttachOpen(true)}
+                disabled={busy}
               >
-                <Ionicons name="at" size={18} color="#0a84ff" />
+                <Ionicons name="add" size={20} color="#0a84ff" />
               </TouchableOpacity>
-            ) : null}
+              <TouchableOpacity
+                style={[s.toolBtn, recorderState.isRecording && s.micOn]}
+                onPress={() => void onMic()}
+                disabled={sttBusy}
+              >
+                {sttBusy ? (
+                  <ActivityIndicator size="small" color="#0a84ff" />
+                ) : (
+                  <Ionicons
+                    name={recorderState.isRecording ? 'stop' : 'mic'}
+                    size={18}
+                    color={recorderState.isRecording ? '#fff' : '#0a84ff'}
+                  />
+                )}
+              </TouchableOpacity>
+            </View>
+
             <TextInput
               style={s.input}
               value={input}
@@ -528,26 +527,93 @@ export default function ChatScreen() {
               multiline
               editable={!busy}
             />
-            {busy ? (
-              <TouchableOpacity
-                style={[s.sendBtn, s.stopBtn]}
-                onPress={stop}
-                disabled={runState === 'stopping'}
-              >
-                {runState === 'stopping' ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Ionicons name="stop" size={16} color="#fff" />
-                )}
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity style={s.sendBtn} onPress={onSend}>
-                <Ionicons name="arrow-up" size={18} color="#fff" />
-              </TouchableOpacity>
-            )}
+
+            {/* 右：群聊里是 @点名，单聊里是快捷指令；再加发送/停止 */}
+            <View style={s.sideGroup}>
+              {inRoom ? (
+                <TouchableOpacity
+                  style={s.toolBtn}
+                  onPress={() => {
+                    setInput((prev) => `${prev}@`);
+                    setMentionQ('');
+                  }}
+                >
+                  <Ionicons name="at" size={18} color="#0a84ff" />
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity style={s.toolBtn} onPress={() => setQuickOpen(true)}>
+                  <Ionicons name="flash-outline" size={18} color="#0a84ff" />
+                </TouchableOpacity>
+              )}
+              {busy ? (
+                <TouchableOpacity
+                  style={[s.sendBtn, s.stopBtn]}
+                  onPress={stop}
+                  disabled={runState === 'stopping'}
+                >
+                  {runState === 'stopping' ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Ionicons name="stop" size={16} color="#fff" />
+                  )}
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity style={s.sendBtn} onPress={onSend}>
+                  <Ionicons name="arrow-up" size={18} color="#fff" />
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
         </View>
       </KeyboardAvoidingView>
+
+      {/* 快捷指令（单聊） */}
+      <Modal
+        visible={quickOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setQuickOpen(false)}
+      >
+        <TouchableOpacity
+          style={s.sheetMask}
+          activeOpacity={1}
+          onPress={() => setQuickOpen(false)}
+        >
+          <View style={s.sheet}>
+            <Text style={s.sheetTitle}>{t('quick.title')}</Text>
+            {(cfg.quickActions ?? []).length === 0 ? (
+              <Text style={s.sheetHint}>{t('home.quick.empty')}</Text>
+            ) : (
+              (cfg.quickActions ?? []).map((qa) => (
+                <TouchableOpacity
+                  key={qa.id}
+                  style={s.sheetRow}
+                  onPress={() => {
+                    setQuickOpen(false);
+                    // 填进输入框，你还能改完再发（避免点错就发出去）
+                    setInput((prev) => (prev ? `${prev} ${qa.prompt}` : qa.prompt));
+                  }}
+                >
+                  <Ionicons name="flash-outline" size={20} color="#0a84ff" />
+                  <Text style={s.sheetTxt} numberOfLines={1}>
+                    {qa.label}
+                  </Text>
+                </TouchableOpacity>
+              ))
+            )}
+            <TouchableOpacity
+              style={s.sheetRow}
+              onPress={() => {
+                setQuickOpen(false);
+                router.push('/quick');
+              }}
+            >
+              <Ionicons name="create-outline" size={20} color="#8e8e93" />
+              <Text style={[s.sheetTxt, { color: '#8e8e93' }]}>{t('home.quick.edit')}</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* 附件来源：拍照 / 相册 / 文件 */}
       <Modal
@@ -932,7 +998,9 @@ const s = StyleSheet.create({
   },
   inputWrap: { paddingHorizontal: 10, paddingTop: 6 },
   inputRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-end' },
-  atBtn: {
+  // 左右各一组、各两个按钮：尺寸统一，输入框自然居中
+  sideGroup: { flexDirection: 'row', gap: 6, alignItems: 'flex-end' },
+  toolBtn: {
     width: 38,
     height: 38,
     borderRadius: 12,
@@ -942,6 +1010,7 @@ const s = StyleSheet.create({
   },
   input: {
     flex: 1,
+    minHeight: 40,
     backgroundColor: '#fff',
     borderRadius: 12,
     paddingHorizontal: 12,
@@ -951,10 +1020,12 @@ const s = StyleSheet.create({
     color: '#111',
   },
   sendBtn: {
-    backgroundColor: '#0a84ff',
+    width: 38,
+    height: 38,
     borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    backgroundColor: '#0a84ff',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   stopBtn: { backgroundColor: '#ff3b30' },
   speakBtn: {
