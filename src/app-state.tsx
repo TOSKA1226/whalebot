@@ -47,6 +47,7 @@ import { pickProvider, resolveAgentCfg } from './agentCfg';
 import * as runsStore from './runs';
 import { addRun, newRunId, type RunLog, type RunTool } from './runs';
 import * as vault from './vault';
+import { speak, stopSpeaking } from './voice';
 import {
   backgroundStatus,
   disableBackgroundRoutines,
@@ -314,6 +315,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [speakingIds, setSpeakingIds] = useState<string[]>([]);
   /** 这一轮是不是已经提示过「已停止」了（并行时好几个成员会同时被掐断） */
   const stoppedRef = useRef(false);
+  /** 最近一次助手说出来的全文（自动朗读用） */
+  const lastAnswerRef = useRef('');
   /** 本会话临时允许的工具（`agentId:tool`），App 重启就没了 */
   const sessionAllowsRef = useRef<Set<string>>(new Set());
   const [sessionAllows, setSessionAllows] = useState<string[]>([]);
@@ -620,6 +623,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const stop = useCallback(() => {
     if (!abortRef.current) return;
     setRunState('stopping');
+    stopSpeaking();
     while (approvalQueue.current.length) approvalQueue.current.shift()?.resolve(false);
     setPending(null);
     setPendingCount(0);
@@ -853,6 +857,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       } finally {
         removeSpeaking(agentId);
       }
+      lastAnswerRef.current = ctx.text;
       void addRun({
         id: newRunId(),
         at: startedAt,
@@ -1065,6 +1070,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setRunState('idle');
         setBusy(false);
         setSpeakingIds([]);
+        // 自动朗读：只念这一轮最后说话的那位（群协作里就是组长的总结）
+        if (cfgRef.current.ttsAuto && !ctrl.signal.aborted && lastAnswerRef.current.trim()) {
+          speak(lastAnswerRef.current, { rate: cfgRef.current.ttsRate ?? 1 });
+        }
         persistSession(true);
         await reloadData();
         await syncScheduled();

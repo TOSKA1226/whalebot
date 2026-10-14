@@ -5,7 +5,7 @@ import { Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View 
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../app-state';
 import type { McpServer } from '../mcp';
-import { newServerId } from '../mcp';
+import { MCP_CATALOG, newServerId, probeServer } from '../mcp';
 import { Btn, SectionTitle } from '../ui';
 
 export default function McpScreen() {
@@ -18,6 +18,9 @@ export default function McpScreen() {
     enabled: boolean;
   } | null>(null);
   const [busy, setBusy] = useState(false);
+  /** 探测结果（一键接入时先探一下，拿服务器真名 + 工具数） */
+  const [probe, setProbe] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [probing, setProbing] = useState(false);
 
   const commit = async (next: McpServer[]) => {
     await saveCfg({ ...cfg, mcpServers: next });
@@ -51,6 +54,36 @@ export default function McpScreen() {
 
   const toggle = async (srv: McpServer) => {
     await commit((cfg.mcpServers ?? []).map((s) => (s.id === srv.id ? { ...s, enabled: !s.enabled } : s)));
+  };
+
+  /** 探活：握手 + 拉工具清单；顺便用服务器自报的名字补上名称 */
+  const doProbe = async (draft?: { id: string | null; name: string; url: string; token: string }) => {
+    const target = draft ?? editing;
+    if (!target?.url.trim()) return;
+    setProbing(true);
+    setProbe(null);
+    const r = await probeServer({
+      id: target.id ?? 'probe',
+      name: target.name || 'probe',
+      url: target.url.trim(),
+      token: target.token.trim() || undefined,
+      enabled: true,
+    });
+    setProbing(false);
+    if (!r.ok) {
+      setProbe({ ok: false, msg: t('mcp.probe.fail', { e: r.error ?? '' }) });
+      return;
+    }
+    setProbe({
+      ok: true,
+      msg: t('mcp.probe.ok', {
+        name: r.name ?? target.name ?? '—',
+        n: r.tools.length,
+      }),
+    });
+    if (!target.name.trim() && r.name) {
+      setEditing((e) => (e ? { ...e, name: r.name as string } : e));
+    }
   };
 
   const statusText = (id: string) => {
@@ -127,9 +160,39 @@ export default function McpScreen() {
 
         <Btn
           label={t('mcp.add')}
-          onPress={() => setEditing({ id: null, name: '', url: '', token: '', enabled: true })}
+          onPress={() => {
+            setProbe(null);
+            setEditing({ id: null, name: '', url: '', token: '', enabled: true });
+          }}
           style={{ marginTop: 8 }}
         />
+
+        <SectionTitle>{t('mcp.catalog')}</SectionTitle>
+        <Text style={s.catalogHint}>{t('mcp.catalogHint')}</Text>
+        {MCP_CATALOG.map((c) => (
+          <TouchableOpacity
+            key={c.name}
+            style={s.catalogRow}
+            onPress={() => {
+              setProbe(null);
+              setEditing({ id: null, name: c.name, url: c.url, token: '', enabled: true });
+            }}
+          >
+            <Ionicons
+              name={c.needsEdit ? 'construct-outline' : 'flash-outline'}
+              size={16}
+              color={c.needsEdit ? '#f5a623' : '#0a84ff'}
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={s.catalogName}>{c.name}</Text>
+              <Text style={s.catalogNote} numberOfLines={2}>
+                {c.url ? `${c.url}
+` : ''}
+                {c.note}
+              </Text>
+            </View>
+          </TouchableOpacity>
+        ))}
 
         <SectionTitle>{t('mcp.tools', { n: mcpTools.length })}</SectionTitle>
         {mcpTools.length === 0 ? (
@@ -179,7 +242,16 @@ export default function McpScreen() {
               autoCapitalize="none"
               autoCorrect={false}
             />
-            <Btn label={t('quick.save')} onPress={save} style={{ marginTop: 14 }} />
+            {probe ? (
+              <Text style={[s.probe, { color: probe.ok ? '#0a84ff' : '#ff3b30' }]}>{probe.msg}</Text>
+            ) : null}
+            <Btn
+              label={probing ? t('mcp.probing') : t('mcp.probe')}
+              kind="ghost"
+              onPress={() => void doProbe()}
+              style={{ marginTop: 14 }}
+            />
+            <Btn label={t('quick.save')} onPress={save} style={{ marginTop: 10 }} />
             <Btn
               label={t('agents.cancel')}
               kind="ghost"
@@ -230,6 +302,20 @@ const s = StyleSheet.create({
     marginBottom: 6,
   },
   toolName: { fontSize: 13, fontWeight: '600', color: '#111' },
+  catalogHint: { fontSize: 11, color: '#999', marginBottom: 8, lineHeight: 16 },
+  catalogRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    marginBottom: 8,
+  },
+  catalogName: { fontSize: 14, fontWeight: '600', color: '#111' },
+  catalogNote: { fontSize: 11, color: '#888', marginTop: 3, lineHeight: 16 },
+  probe: { fontSize: 12, marginTop: 12, lineHeight: 17 },
   toolDesc: { fontSize: 11, color: '#777', marginTop: 3, lineHeight: 16 },
   mask: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
   sheet: { backgroundColor: '#fff', borderTopLeftRadius: 18, borderTopRightRadius: 18, padding: 18 },

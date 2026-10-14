@@ -5,11 +5,14 @@
 import * as store from './store';
 import { askUser, type AskAnswer, type AskField } from './context';
 import * as vault from './vault';
+import { normalizeConnectorName } from './connectors';
+import { callConnector } from './connectorCall';
+import type { Config } from './config';
 
 export type LocalResult = { ok: boolean; stdout?: string; stderr?: string; data?: any };
 
 /** 每个本地工具都知道"现在在为哪个助手干活"（并行跑群协作时必须显式传） */
-export type LocalCtx = { agentId: string };
+export type LocalCtx = { agentId: string; cfg: Config };
 
 type Handler = (args: any, ctx: LocalCtx) => Promise<LocalResult>;
 
@@ -156,6 +159,34 @@ export const LOCAL_HANDLERS: Record<string, Handler> = {
       ok: true,
       stdout: `凭据 ${c.name} 的值：${value}\n（只在这次任务里用，不要复述给用户，也不要写进任何会长期保存的地方）`,
       data: { name: c.name, value },
+    };
+  },
+
+  /**
+   * 连接器请求：凭据由 App 取出、经容器注入，模型看不到明文。
+   */
+  connector_request: async (args, ctx) => {
+    const name = normalizeConnectorName(str(args.connector));
+    const list = ctx.cfg.connectors ?? [];
+    const c = list.find((x) => x.name === name);
+    if (!c) {
+      const names = list.map((x) => x.name).join('、') || '（一个都没配）';
+      return { ok: false, stderr: `没有叫「${name}」的连接器。已配置的：${names}` };
+    }
+    const r = await callConnector(ctx.cfg, c, {
+      path: str(args.path),
+      method: str(args.method, 'GET'),
+      query: args.query,
+      body: args.body,
+    });
+    if (!r.ok && !r.text) {
+      return { ok: false, stderr: r.error ?? '调用失败' };
+    }
+    return {
+      ok: r.ok,
+      stdout: `${(args.method ?? 'GET').toUpperCase()} ${r.url} → ${r.status ?? '?'}\n${r.text.slice(0, 6000)}`,
+      stderr: r.ok ? undefined : r.error,
+      data: { status: r.status, url: r.url },
     };
   },
 

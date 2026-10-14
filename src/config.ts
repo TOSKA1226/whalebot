@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Lang } from './i18n';
 import type { McpServer } from './mcp';
+import type { Connector } from './connectors';
 import { getSecret, setSecret } from './secrets';
 
 /** 首页快捷指令（用户自定义；旧的三个写死的测试入口已移除） */
@@ -42,6 +43,16 @@ export type Config = {
   groupColors: Record<string, string>;
   /** 永久工具权限规则：agentId（或 '*'）→ 工具名 → allow/deny */
   permRules: Record<string, Record<string, 'allow' | 'deny'>>;
+  /** 语音：回复要不要自动念出来 */
+  ttsAuto: boolean;
+  /** 语音：语速（1 = 正常） */
+  ttsRate: number;
+  /** 连接器（外部服务的地址 + 凭据引用） */
+  connectors: Connector[];
+  /** 语音输入用哪个供应商的 Key（'' = 用全局设置） */
+  sttProviderId: string;
+  /** 语音输入的模型名（'' = 没配，语音输入不可用） */
+  sttModel: string;
   /** 要不要限制单轮 token 用量 */
   tokenLimitEnabled: boolean;
   /** 单轮 token 上限（tokenLimitEnabled 为 true 时生效） */
@@ -65,6 +76,11 @@ export const DEFAULT_CONFIG: Config = {
   groupProviders: {},
   groupColors: {},
   permRules: {},
+  connectors: [],
+  ttsAuto: false,
+  ttsRate: 1,
+  sttProviderId: '',
+  sttModel: '',
   tokenLimitEnabled: true,
   tokenLimit: 200000,
 };
@@ -97,6 +113,14 @@ export async function loadConfig(): Promise<Config> {
     groupColors:
       base.groupColors && typeof base.groupColors === 'object' ? base.groupColors : {},
     permRules: base.permRules && typeof base.permRules === 'object' ? base.permRules : {},
+    connectors: Array.isArray(base.connectors) ? base.connectors : [],
+    ttsAuto: base.ttsAuto === true,
+    ttsRate:
+      Number.isFinite(Number(base.ttsRate)) && Number(base.ttsRate) > 0
+        ? Number(base.ttsRate)
+        : 1,
+    sttProviderId: typeof base.sttProviderId === 'string' ? base.sttProviderId : '',
+    sttModel: typeof base.sttModel === 'string' ? base.sttModel : '',
     toolDisplay: base.toolDisplay ?? 'show',
     tokenLimitEnabled: base.tokenLimitEnabled !== false,
     tokenLimit:
