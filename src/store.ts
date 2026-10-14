@@ -18,6 +18,10 @@ export type Agent = {
   model?: string;
   /** 该助手单独使用的接口地址；留空则用全局设置 */
   baseUrl?: string;
+  /** 该助手单独的 token 上限模式；缺省 = 跟随全局 */
+  tokenLimitMode?: 'global' | 'custom' | 'unlimited';
+  /** 该助手单独的 token 上限数值（mode 为 custom 时生效） */
+  tokenLimit?: number;
   createdAt: number;
 };
 
@@ -122,6 +126,8 @@ export async function upsertAgent(input: {
   group?: string;
   model?: string;
   baseUrl?: string;
+  tokenLimitMode?: 'global' | 'custom' | 'unlimited';
+  tokenLimit?: number;
 }): Promise<Agent> {
   const items = await listAgents();
   const idx = input.id ? items.findIndex((a) => a.id === input.id) : -1;
@@ -134,6 +140,8 @@ export async function upsertAgent(input: {
       group: input.group ?? items[idx].group,
       model: input.model ?? items[idx].model,
       baseUrl: input.baseUrl ?? items[idx].baseUrl,
+      tokenLimitMode: input.tokenLimitMode ?? items[idx].tokenLimitMode,
+      tokenLimit: input.tokenLimit ?? items[idx].tokenLimit,
     };
     items[idx] = merged;
     await write(K.agents, items);
@@ -145,6 +153,8 @@ export async function upsertAgent(input: {
     description: (input.description ?? '').trim(),
     persona: (input.persona ?? '').trim(),
     group: (input.group ?? '未分组').trim(),
+    tokenLimitMode: input.tokenLimitMode,
+    tokenLimit: input.tokenLimit,
     createdAt: Date.now(),
   };
   items.push(a);

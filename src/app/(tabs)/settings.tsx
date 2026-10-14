@@ -79,6 +79,44 @@ export default function SettingsTab() {
         </View>
         <Text style={s.hint2}>{t('settings.tools.desc')}</Text>
 
+        <SectionTitle>{t('budget.section')}</SectionTitle>
+        <Text style={s.label}>{t('budget.limit')}</Text>
+        <View style={s.langRow}>
+          {[true, false].map((v) => (
+            <Btn
+              key={String(v)}
+              label={v ? t('budget.on') : t('budget.off')}
+              kind={draft.tokenLimitEnabled === v ? 'primary' : 'ghost'}
+              style={{ flex: 1 }}
+              onPress={() => set({ tokenLimitEnabled: v })}
+            />
+          ))}
+        </View>
+        {draft.tokenLimitEnabled ? (
+          <>
+            <TextInput
+              style={s.input}
+              value={String(draft.tokenLimit ?? '')}
+              onChangeText={(v) => set({ tokenLimit: Number(v.replace(/[^0-9]/g, '')) || 0 })}
+              keyboardType="number-pad"
+              placeholder="200000"
+              placeholderTextColor="#9a9a9e"
+            />
+            <View style={[s.langRow, { marginTop: 8 }]}>
+              {[50000, 200000, 1000000, 2000000].map((n) => (
+                <Btn
+                  key={n}
+                  label={n >= 1000000 ? `${n / 1000000}M` : `${n / 1000}k`}
+                  kind={draft.tokenLimit === n ? 'primary' : 'ghost'}
+                  style={{ flex: 1 }}
+                  onPress={() => set({ tokenLimit: n })}
+                />
+              ))}
+            </View>
+          </>
+        ) : null}
+        <Text style={s.hint2}>{t('budget.limitHint')}</Text>
+
         <Row
           title={t('mcp.entry')}
           desc={t('mcp.tools', { n: mcpTools.length })}
@@ -133,7 +171,11 @@ export default function SettingsTab() {
               : t('notify.perm', { s: notifyGranted ? t('notify.granted') : t('notify.denied') })}
           </Text>
           {usage ? (
-            <Text style={s.line}>{t('budget.line', { used: usage.used, budget: usage.budget })}</Text>
+            <Text style={s.line}>
+              {usage.budget > 0
+                ? t('budget.line', { used: usage.used, budget: usage.budget })
+                : t('budget.usedNow', { used: usage.used })}
+            </Text>
           ) : null}
           <Text style={s.line}>
             记忆 {data.memories.length} · 技能 {data.skills.length} · 例程 {data.routines.length}

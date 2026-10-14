@@ -36,6 +36,10 @@ export type Config = {
   reviewModel: string;
   /** 外接 MCP 服务器 */
   mcpServers: McpServer[];
+  /** 要不要限制单轮 token 用量 */
+  tokenLimitEnabled: boolean;
+  /** 单轮 token 上限（tokenLimitEnabled 为 true 时生效） */
+  tokenLimit: number;
 };
 
 export const DEFAULT_CONFIG: Config = {
@@ -52,6 +56,8 @@ export const DEFAULT_CONFIG: Config = {
   reviewEnabled: false,
   reviewModel: '',
   mcpServers: [],
+  tokenLimitEnabled: true,
+  tokenLimit: 200000,
 };
 
 const KEY = 'whalebot.config.v2';
@@ -78,6 +84,11 @@ export async function loadConfig(): Promise<Config> {
     quickActions: Array.isArray(base.quickActions) ? base.quickActions : [],
     mcpServers: Array.isArray(base.mcpServers) ? base.mcpServers : [],
     toolDisplay: base.toolDisplay ?? 'show',
+    tokenLimitEnabled: base.tokenLimitEnabled !== false,
+    tokenLimit:
+      Number.isFinite(Number(base.tokenLimit)) && Number(base.tokenLimit) > 0
+        ? Number(base.tokenLimit)
+        : DEFAULT_CONFIG.tokenLimit,
   };
 }
 

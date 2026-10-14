@@ -10,6 +10,8 @@ export type SessionBubble = {
   text: string;
   /** 房间里是谁在说话 */
   speaker?: string;
+  /** 群协作阶段：组长派发 / 成员干活 / 组长总结 */
+  phase?: 'plan' | 'work' | 'summary';
   /** role === 'tool' 时的结构化信息 */
   tool?: { name: string; args?: any; ok?: boolean; done?: boolean };
 };
@@ -20,6 +22,8 @@ export type Session = {
   id: string;
   title: string;
   agentId: string;
+  /** 属于某个助手群时填群 id（群聊会话） */
+  roomId?: string;
   createdAt: number;
   updatedAt: number;
   bubbles: SessionBubble[];
@@ -43,6 +47,11 @@ export async function listSessions(): Promise<Session[]> {
 
 export async function getSession(id: string): Promise<Session | undefined> {
   return (await listSessions()).find((s) => s.id === id);
+}
+
+/** 某个群最近的一段会话 */
+export async function latestSessionOfRoom(roomId: string): Promise<Session | undefined> {
+  return (await listSessions()).find((s) => s.roomId === roomId);
 }
 
 /** 写入或更新一个会话（整体覆盖） */

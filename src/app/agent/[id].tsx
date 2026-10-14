@@ -30,6 +30,8 @@ export default function AgentProfile() {
     model: '',
     baseUrl: '',
   });
+  const [limitMode, setLimitMode] = useState<'global' | 'custom' | 'unlimited'>('global');
+  const [limitValue, setLimitValue] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [hasOwnKey, setHasOwnKey] = useState(false);
   const [data, setData] = useState<{
@@ -50,6 +52,8 @@ export default function AgentProfile() {
         model: a.model ?? '',
         baseUrl: a.baseUrl ?? '',
       });
+      setLimitMode(a.tokenLimitMode ?? 'global');
+      setLimitValue(a.tokenLimit ? String(a.tokenLimit) : '');
     }
     try {
       setHasOwnKey(!!(await getSecret(`apikey.${id}`)));
@@ -130,6 +134,36 @@ export default function AgentProfile() {
           autoCapitalize="none"
         />
 
+        <SectionTitle>{t('budget.ownLimit')}</SectionTitle>
+        <View style={s.chipRow}>
+          {(['global', 'custom', 'unlimited'] as const).map((m) => (
+            <TouchableOpacity
+              key={m}
+              style={[s.chip, limitMode === m && s.chipOn]}
+              onPress={() => setLimitMode(m)}
+            >
+              <Text style={[s.chipTxt, limitMode === m && s.chipTxtOn]}>
+                {m === 'global'
+                  ? t('budget.followGlobal')
+                  : m === 'custom'
+                    ? t('budget.on')
+                    : t('budget.off')}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        {limitMode === 'custom' ? (
+          <TextInput
+            style={[s.input, { marginTop: 8 }]}
+            value={limitValue}
+            onChangeText={(v) => setLimitValue(v.replace(/[^0-9]/g, ''))}
+            keyboardType="number-pad"
+            placeholder="200000"
+            placeholderTextColor="#9a9a9e"
+          />
+        ) : null}
+        <Text style={s.hint2}>{t('budget.limitHint')}</Text>
+
         <SectionTitle>
           {t('agent.apiKey')}
           {hasOwnKey ? `　${t('agent.keySet')}` : ''}
@@ -163,7 +197,12 @@ export default function AgentProfile() {
           label={t('agents.save')}
           onPress={async () => {
             if (!agent) return;
-            await saveAgent({ id: agent.id, ...draft });
+            await saveAgent({
+              id: agent.id,
+              ...draft,
+              tokenLimitMode: limitMode,
+              tokenLimit: limitMode === 'custom' ? Number(limitValue) || 0 : undefined,
+            });
             if (apiKey.trim()) {
               await setSecret(`apikey.${agent.id}`, apiKey.trim());
               setApiKey('');
@@ -351,6 +390,17 @@ const s = StyleSheet.create({
   },
   hint2: { fontSize: 11, color: '#aaa', marginTop: 6, lineHeight: 16 },
   multi: { height: 150, textAlignVertical: 'top' },
+  chipRow: { flexDirection: 'row', gap: 8 },
+  chip: {
+    flex: 1,
+    paddingVertical: 9,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+  },
+  chipOn: { backgroundColor: '#0a84ff' },
+  chipTxt: { fontSize: 13, color: '#111', fontWeight: '600' },
+  chipTxtOn: { color: '#fff' },
   empty: { fontSize: 13, color: '#999', marginBottom: 8 },
   action: { fontSize: 13, color: '#0a84ff', fontWeight: '600' },
   danger: { fontSize: 13, color: '#ff3b30', fontWeight: '600' },
