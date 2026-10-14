@@ -6,6 +6,7 @@ import type { ToolSpec } from './tools';
 import * as store from './store';
 import { getActiveAgent } from './context';
 import type { Config } from './config';
+import { buildUserContent } from './userContent';
 
 export type AgentEvent =
   | { type: 'assistant_delta'; text: string }
@@ -146,23 +147,7 @@ export async function runAgent(params: {
     messages.unshift({ role: 'system', content: sysContent });
   }
   // 附件：能看图的模型就把图塞进多模态内容；文件一律告诉它容器里的路径
-  const fileNotes = attachments
-    .filter((a) => a.path)
-    .map((a) => `[附件] ${a.name}${a.mime ? ` (${a.mime})` : ''} 已放到容器：${a.path}`)
-    .join('\n');
-  const textWithNotes = fileNotes ? `${userText}\n\n${fileNotes}` : userText;
-  const images = cfg.vision ? attachments.filter((a) => a.kind === 'image' && a.dataUrl) : [];
-  if (images.length) {
-    messages.push({
-      role: 'user',
-      content: [
-        { type: 'text', text: textWithNotes },
-        ...images.map((a) => ({ type: 'image_url' as const, image_url: { url: a.dataUrl as string } })),
-      ],
-    });
-  } else {
-    messages.push({ role: 'user', content: textWithNotes });
-  }
+  messages.push({ role: 'user', content: buildUserContent(userText, attachments, cfg.vision) });
 
   for (let step = 0; step < maxSteps; step++) {
     if (aborted()) {

@@ -2,6 +2,11 @@
 # 触发：Actions → Build APK → Run workflow（也可以用 scripts 里的 ci_build.py 一键触发）
 name: Build APK
 
+concurrency:
+  # 手滑点两次时，取消前一次，别浪费额度
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   workflow_dispatch:
     inputs:
@@ -30,6 +35,15 @@ jobs:
 
       - name: 准备 Android SDK
         uses: android-actions/setup-android@v3
+
+      - name: 缓存 Gradle（省时间也省额度）
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('package-lock.json', 'app.json') }}
+          restore-keys: gradle-${{ runner.os }}-
 
       - name: 装依赖
         run: npm ci --no-audit --no-fund
