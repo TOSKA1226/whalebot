@@ -59,5 +59,7 @@ export async function resolveAgentCfg(
     apiKey: key,
     model: agent?.model?.trim() || provider?.model?.trim() || cfg.model,
     baseUrl: agent?.baseUrl?.trim() || provider?.baseUrl?.trim() || cfg.baseUrl,
+    // 这个模型能不能看图：供应商说了算，没写就用全局设置
+    vision: provider?.vision ?? cfg.vision,
   };
 }

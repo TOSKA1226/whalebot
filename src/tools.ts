@@ -173,6 +173,33 @@ export const TOOLS: ToolSpec[] = [
 
   // ---------- 本地（App 自己执行）----------
   {
+    name: 'web_search',
+    capability: 'web.search',
+    needsApproval: false,
+    description:
+      '联网搜索（免审批）。不知道答案、需要最新消息、用户说"搜一下/查一下"时用它。返回标题/链接/摘要；要细看某条就再用 web_read 打开那个链接。',
+    parameters: obj(
+      {
+        query: { type: 'string', description: '搜索关键词，像人一样写就行' },
+        limit: { type: 'number', description: '要几条，默认 6，最多 10' },
+      },
+      ['query'],
+    ),
+  },
+  {
+    name: 'web_read',
+    capability: 'web.read',
+    needsApproval: false,
+    description: '打开一个网址并抽成纯文本（免审批）。通常配合 web_search 用：先搜，再读最相关的那一两条。',
+    parameters: obj(
+      {
+        url: { type: 'string', description: '要打开的网址' },
+        maxChars: { type: 'number', description: '最多返回多少字，默认 6000' },
+      },
+      ['url'],
+    ),
+  },
+  {
     name: 'connector_request',
     capability: 'connector_request',
     needsApproval: true,

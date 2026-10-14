@@ -7,9 +7,16 @@ export type ToolCall = {
   function: { name: string; arguments: string };
 };
 
+/** 多模态内容块（图片走 OpenAI 的 image_url + data URL 格式） */
+export type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
+export type MsgContent = string | ContentPart[] | null;
+
 export type Msg = {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
+  content: MsgContent;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
 };

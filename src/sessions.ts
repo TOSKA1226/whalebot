@@ -14,6 +14,8 @@ export type SessionBubble = {
   phase?: 'plan' | 'work' | 'summary';
   /** role === 'tool' 时的结构化信息 */
   tool?: { name: string; args?: any; ok?: boolean; done?: boolean };
+  /** 点这条气泡要干什么（例如跳到某个助手的私聊） */
+  action?: { kind: 'agent'; agentId: string; label?: string };
 };
 
 export type SessionMsg = { role: 'user' | 'assistant' | 'system'; content: string };
@@ -72,6 +74,35 @@ export async function removeSession(id: string): Promise<void> {
 
 export async function clearAllSessions(): Promise<void> {
   await AsyncStorage.removeItem(KEY);
+}
+
+/**
+ * 往「某个助手的私聊会话」里追加一条（没有就新建）。
+ * 群协作时成员各自汇报走这里 —— 群里只看得到一行进度，细节在这个助手的私聊里。
+ */
+export async function appendToAgentSession(
+  agentId: string,
+  entry: { title?: string; bubble: SessionBubble; message?: SessionMsg },
+): Promise<string> {
+  const list = await listSessions();
+  let sess = list.find((x) => !x.roomId && x.agentId === agentId);
+  if (!sess) {
+    const id = newSessionId();
+    sess = {
+      id,
+      title: entry.title ?? '新对话',
+      agentId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      bubbles: [],
+      messages: [],
+    };
+  }
+  sess.bubbles = [...(sess.bubbles ?? []), entry.bubble];
+  if (entry.message) sess.messages = [...(sess.messages ?? []), entry.message];
+  sess.updatedAt = Date.now();
+  await upsertSession(sess);
+  return sess.id;
 }
 
 /** 会话标题：取第一条用户消息的前 24 个字 */

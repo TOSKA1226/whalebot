@@ -58,11 +58,13 @@ import {
   mentionPrompt,
   parseAssignments,
   parseMentions,
+  planWaves,
   stripPlanBlock,
   summaryPrompt,
   workerPrompt,
   type Member,
 } from './orchestra';
+import { dataUrlFor, type PickedAttachment } from './attachments';
 import {
   cancelAllScheduled,
   cancelScheduled,
@@ -122,7 +124,7 @@ type AppState = {
   reloadData: () => Promise<void>;
   checkHealth: (c?: Config) => Promise<void>;
   saveCfg: (c: Config) => Promise<void>;
-  send: (text: string) => Promise<void>;
+  send: (text: string, attachments?: PickedAttachment[]) => Promise<void>;
   runTurn: (text: string, opts?: { silentBubble?: boolean }) => Promise<string>;
   clearChat: () => void;
   push: (role: Bubble['role'], text: string) => string;
@@ -169,6 +171,8 @@ type AppState = {
   deleteRoom: (id: string) => Promise<void>;
   /** 打开某个群的会话 */
   openRoom: (roomId: string) => Promise<void>;
+  /** 打开某个助手的私聊（成员汇报就落在那里） */
+  openAgentChat: (agentId: string) => Promise<void>;
   /** 某助手这一轮实际生效的 token 上限（null = 不限制） */
   limitFor: (agentId: string) => number | null;
   /** 模型供应商（接口 + Key + 默认模型） */
@@ -184,6 +188,7 @@ type AppState = {
     model: string;
     note?: string;
     apiKey?: string;
+    vision?: boolean;
   }) => Promise<Provider>;
   deleteProvider: (id: string) => Promise<void>;
   /** 给某个分组绑定供应商（组内助手共用这把 Key） */
@@ -345,9 +350,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       speaker?: string,
       tool?: Bubble['tool'],
       phase?: Bubble['phase'],
+      action?: Bubble['action'],
     ) => {
       const id = nextId();
-      setBubbles((prev) => [...prev, { id, role, text, speaker, tool, phase }]);
+      setBubbles((prev) => [...prev, { id, role, text, speaker, tool, phase, action }]);
       return id;
     },
     [],
@@ -676,10 +682,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   /** 把 agent 事件写进 ctx 对应的气泡（并行时每个 run 各用一份） */
   const makeOnEvent = useCallback(
-    (ctx: RunCtx) => (e: AgentEvent) => {
+    (ctx: RunCtx, quiet = false) => (e: AgentEvent) => {
       switch (e.type) {
         case 'assistant_delta': {
           ctx.text += e.text;
+          if (quiet) break;
           if (!ctx.streamId) {
             ctx.streamId = push('assistant', '', ctx.speaker, undefined, ctx.phase);
             ctx.bubbleId = ctx.streamId;
@@ -694,6 +701,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         case 'tool_start':
           ctx.streamId = null;
           ctx.tools.push({ name: e.name });
+          if (quiet) break;
           ctx.toolId = push(
             'tool',
             `${e.name}  ${JSON.stringify(e.args).slice(0, 300)}`,
@@ -705,6 +713,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         case 'tool_result': {
           const id = ctx.toolId;
           const ok = !!e.result?.ok;
+          if (quiet && !id) break;
           const brief = ok
             ? `✓ ${String(e.result.stdout ?? JSON.stringify(e.result.data ?? 'ok')).slice(0, 400)}`
             : `⛔ ${String(e.result?.stderr ?? 'failed').slice(0, 400)}`;
@@ -731,7 +740,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         case 'error':
           ctx.streamId = null;
           ctx.error = e.message;
-          push('error', ctx.speaker ? `${ctx.speaker}：${e.message}` : e.message);
+          if (!quiet) push('error', ctx.speaker ? `${ctx.speaker}：${e.message}` : e.message);
           break;
         case 'done':
           ctx.streamId = null;
@@ -815,6 +824,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         signal?: AbortSignal;
         /** 群聊里标注说话人；单聊不标 */
         label?: boolean;
+        attachments?: PickedAttachment[];
+        /** true = 过程不刷气泡（群协作里成员干活用，结果走私聊） */
+        quiet?: boolean;
       } = {},
     ): Promise<{ text: string; bubbleId: string | null; messages: Msg[] }> => {
       const a = agentsRef.current.find((x) => x.id === agentId);
@@ -840,9 +852,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           agentId,
           history: opts.fresh === false ? historyRef.current : initialHistory(c.lang),
           userText: prompt,
-          onEvent: makeOnEvent(ctx),
+          onEvent: makeOnEvent(ctx, opts.quiet),
           approve: makeApprove(agentId),
           signal: opts.signal,
+          attachments: opts.attachments?.map((a) => ({
+            kind: a.kind,
+            name: a.name,
+            mime: a.mime,
+            path: a.path,
+            dataUrl: a.kind === 'image' ? dataUrlFor(a) : undefined,
+          })),
           extraTools: mcpToolSpecs(mcpToolsRef.current),
           runMcpTool: runMcp,
           budgetTokens: limit ?? undefined,
@@ -886,6 +905,58 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       removeSpeaking,
       runMcp,
     ],
+  );
+
+  /**
+   * 成员干完活：①写进它的私聊会话 ②给你推一条通知 ③群里只留一行可点开的进度。
+   * 这是"各个助手单独给我发消息"的实现（群里只保留组长的派发与总结）。
+   */
+  const deliverReport = useCallback(
+    async (
+      agent: store.Agent,
+      r: { name: string; task: string; output: string; ok: boolean; ms: number; skipped?: string },
+      roomName: string,
+    ) => {
+      const body = r.ok
+        ? r.output
+        : r.skipped
+          ? `这一份没做成：${r.skipped}`
+          : '这一份没做成（没有产出，可能是接口报错）';
+      try {
+        await sessions.appendToAgentSession(agent.id, {
+          bubble: { id: nextId(), role: 'assistant', text: body, speaker: agent.name },
+          message: {
+            role: 'assistant',
+            content: `[群任务 · ${roomName}] ${r.task}\n\n${body}`,
+          },
+        });
+      } catch (e: any) {
+        diag('dm-fail', { e: String(e?.message ?? e) });
+      }
+      push(
+        'system',
+        tRef.current('orchestra.dmLine', {
+          name: agent.name,
+          s: (r.ms / 1000).toFixed(0),
+          ok: r.ok ? '✅' : '⛔',
+        }),
+        undefined,
+        undefined,
+        undefined,
+        { kind: 'agent', agentId: agent.id, label: agent.name },
+      );
+      try {
+        await notifyNow(
+          cfgRef.current,
+          tRef.current('orchestra.dmTitle', { name: agent.name }),
+          body.slice(0, 180),
+          { withReply: true },
+        );
+      } catch {
+        // 通知不可用就算了，私聊会话里还有
+      }
+    },
+    [push],
   );
 
   /**
@@ -989,23 +1060,70 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           .join('\n'),
       );
 
-      // 3) 成员各自干活、各自向用户汇报 —— 它们之间没有依赖，并行跑
-      const settled = await Promise.all(
-        tasks.map(async (task) => {
-          const a = members.find((x) => x.name === task.agent);
-          if (!a) return null;
-          const out = await runOne(
-            a.id,
-            workerPrompt(userText, task.task, leader.name, a.name),
-            { phase: 'work', label: true, signal: opts.signal },
-          );
-          return { name: a.name, task: task.task, output: out.text };
-        }),
-      );
-      const results = settled.filter(
-        (r): r is { name: string; task: string; output: string } => !!r,
-      );
-      // 中途被叫停：已经拿到的成果留在群里，剩下的不做了（也不再跑组长总结）
+      // 3) 成员干活：同一波并行跑，有 after 依赖的排到下一波
+      type Done = {
+        name: string;
+        task: string;
+        output: string;
+        ok: boolean;
+        ms: number;
+        skipped?: string;
+      };
+      const doneMap = new Map<string, Done>();
+      const results: Done[] = [];
+      const waves = planWaves(tasks);
+      for (const [wi, wave] of waves.entries()) {
+        if (opts.signal?.aborted) break;
+        if (waves.length > 1) {
+          push('system', tRef.current('orchestra.wave', { i: wi + 1, n: waves.length }));
+        }
+        const settled = await Promise.all(
+          wave.map(async (task): Promise<Done | null> => {
+            const a = members.find((x) => x.name === task.agent);
+            if (!a) return null;
+            // 依赖没成 → 直接跳过，别让它拿着空上下文瞎猜
+            const failedDeps = (task.after ?? []).filter((n) => doneMap.get(n)?.ok === false);
+            if (failedDeps.length) {
+              return {
+                name: a.name,
+                task: task.task,
+                output: '',
+                ok: false,
+                ms: 0,
+                skipped: `前置「${failedDeps.join('、')}」没有产出`,
+              };
+            }
+            const deps = (task.after ?? []).map((n) => ({
+              name: n,
+              output: doneMap.get(n)?.output ?? '',
+            }));
+            const t0 = Date.now();
+            const out = await runOne(
+              a.id,
+              workerPrompt(userText, task.task, leader.name, a.name, deps),
+              { phase: 'work', label: true, signal: opts.signal, quiet: true },
+            );
+            const text = out.text.trim();
+            return {
+              name: a.name,
+              task: task.task,
+              output: out.text,
+              ok: !!text,
+              ms: Date.now() - t0,
+            };
+          }),
+        );
+        // 这一波跑完：各自私聊汇报 + 通知 + 群内一行进度
+        for (const r of settled) {
+          if (!r) continue;
+          doneMap.set(r.name, r);
+          results.push(r);
+          const a = members.find((x) => x.name === r.name);
+          if (a) await deliverReport(a, r, room.name);
+        }
+      }
+
+      // 中途被叫停：已拿到的成果照常留在记录里，不再跑组长总结
       if (opts.signal?.aborted) {
         notifyStopped();
         for (const r of results) {
@@ -1026,7 +1144,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       // 4) 成果交回组长，由组长向用户总结
       push('system', tRef.current('orchestra.collect', { n: results.length }));
-      const final = await runOne(leader.id, summaryPrompt(userText, leader.name, results), {
+      const final = await runOne(
+        leader.id,
+        summaryPrompt(
+          userText,
+          leader.name,
+          results.map((r) => ({
+            name: r.name,
+            task: r.task,
+            output: r.ok ? r.output : `（这一份没做成：${r.skipped ?? '没有产出或报错'}）`,
+          })),
+        ),
+        {
         phase: 'summary',
         label: true,
         signal: opts.signal,
@@ -1036,11 +1165,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         { role: 'assistant', content: `[${leader.name}] ${final.text}` },
       ];
     },
-    [notifyStopped, push, runOne],
+    [deliverReport, notifyStopped, push, runOne],
   );
 
   const runTurn = useCallback(
-    async (userText: string, opts: { silentBubble?: boolean; agentId?: string } = {}) => {
+    async (
+      userText: string,
+      opts: { silentBubble?: boolean; agentId?: string; attachments?: PickedAttachment[] } = {},
+    ) => {
       // 已经有一轮在跑就不叠（用户可以先点「停止」）
       if (abortRef.current) return '';
       const ctrl = new AbortController();
@@ -1061,7 +1193,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (!titleRef.current) {
           titleRef.current = sessions.titleFrom(userText, tRef.current('chats.untitled'));
         }
-        const out = await runOne(who, userText, { fresh: false, signal: ctrl.signal });
+        const out = await runOne(who, userText, {
+          fresh: false,
+          signal: ctrl.signal,
+          attachments: opts.attachments,
+        });
         if (out.messages.length) historyRef.current = out.messages;
         answer = out.text;
         return out.text;
@@ -1083,10 +1219,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, attachments?: PickedAttachment[]) => {
       const trimmed = text.trim();
-      if (!trimmed) return;
-      await runTurn(trimmed);
+      if (!trimmed && !attachments?.length) return;
+      await runTurn(trimmed || '（看附件）', { attachments });
     },
     [runTurn],
   );
@@ -1254,6 +1390,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [reloadData, startSession],
   );
 
+  /** 打开某个助手的私聊（没有就新开一段） */
+  const openAgentChat = useCallback(
+    async (agentId: string) => {
+      const list = await sessions.listSessions();
+      const s = list.find((x) => !x.roomId && x.agentId === agentId);
+      if (s) {
+        await openSession(s.id);
+        return;
+      }
+      await switchAgent(agentId);
+    },
+    [openSession, switchAgent],
+  );
+
   /* ---------------- 模型供应商 / 分组 ---------------- */
 
   const saveProvider = useCallback(
@@ -1264,6 +1414,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       model: string;
       note?: string;
       apiKey?: string;
+      vision?: boolean;
     }) => {
       const p = await providerStore.upsertProvider({
         id: input.id,
@@ -1271,6 +1422,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         baseUrl: input.baseUrl,
         model: input.model,
         note: input.note,
+        vision: input.vision,
       });
       if (input.apiKey !== undefined) {
         await setSecret(providerSecret(p.id), input.apiKey.trim());
@@ -1545,6 +1697,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     updateRoom,
     deleteRoom,
     openRoom,
+    openAgentChat,
     limitFor,
     providers: providerList,
     providerKeys: providerKeyMap,

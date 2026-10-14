@@ -49,6 +49,12 @@ export type Config = {
   ttsRate: number;
   /** 连接器（外部服务的地址 + 凭据引用） */
   connectors: Connector[];
+  /** 联网搜索：Tavily API Key（留空则用必应等免费引擎） */
+  searchApiKey: string;
+  /** 联网搜索：自建 SearxNG 地址（可选） */
+  searxngUrl: string;
+  /** 当前模型是否支持图片输入（多模态） */
+  vision: boolean;
   /** 语音输入用哪个供应商的 Key（'' = 用全局设置） */
   sttProviderId: string;
   /** 语音输入的模型名（'' = 没配，语音输入不可用） */
@@ -77,6 +83,9 @@ export const DEFAULT_CONFIG: Config = {
   groupColors: {},
   permRules: {},
   connectors: [],
+  searchApiKey: '',
+  searxngUrl: '',
+  vision: false,
   ttsAuto: false,
   ttsRate: 1,
   sttProviderId: '',
@@ -114,6 +123,9 @@ export async function loadConfig(): Promise<Config> {
       base.groupColors && typeof base.groupColors === 'object' ? base.groupColors : {},
     permRules: base.permRules && typeof base.permRules === 'object' ? base.permRules : {},
     connectors: Array.isArray(base.connectors) ? base.connectors : [],
+    searchApiKey: typeof base.searchApiKey === 'string' ? base.searchApiKey : '',
+    searxngUrl: typeof base.searxngUrl === 'string' ? base.searxngUrl : '',
+    vision: base.vision === true,
     ttsAuto: base.ttsAuto === true,
     ttsRate:
       Number.isFinite(Number(base.ttsRate)) && Number(base.ttsRate) > 0

@@ -7,7 +7,7 @@
  *   → 成员成果回给组长（summaryPrompt） → 组长在群里总结（leaderFinalPrompt 复用 summaryPrompt）
  */
 
-export type Assignment = { agent: string; task: string };
+export type Assignment = { agent: string; task: string; after?: string[] };
 export type Member = { id: string; name: string; description?: string };
 
 const memberLines = (members: Member[]) =>
@@ -29,10 +29,13 @@ ${memberLines(members)}
 1. 先用一两句自然的话，向用户说明你打算怎么安排（不要客套，不要重复任务原文）。
 2. 然后输出一个 JSON 数组，把活拆给真正需要的组员，格式严格如下：
 \`\`\`json
-[{"agent":"组员名字","task":"交给这个组员的具体任务，写清要产出什么"}]
+[{"agent":"组员名字","task":"交给这个组员的具体任务，写清要产出什么","after":["必须先完成的组员名字"]}]
 \`\`\`
-要求：agent 必须用上面列出的组员名字原文；不需要干活的组员不要出现在数组里；如果没有需要拆的活，输出空数组 []。
-JSON 必须能被 JSON.parse 解析，不要写注释。`;
+要求：
+- agent 必须用上面列出的组员名字原文；不需要干活的组员不要出现在数组里；没有可拆的活就输出空数组 []。
+- **组员是同时开工的（并行）**：只有某个人的活真的必须等另一个人的结果时，才在 after 里写那个人；能并行就别写 after。
+- task 要写清"产出什么"，因为组员干完会**单独私聊向用户汇报**，你最后只负责汇总结论。
+- JSON 必须能被 JSON.parse 解析，不要写注释。`;
 }
 
 /** 成员干活（各自直接向用户汇报） */
@@ -41,19 +44,26 @@ export function workerPrompt(
   task: string,
   leaderName: string,
   memberName: string,
+  deps: { name: string; output: string }[] = [],
 ): string {
+  const depBlock = deps.length
+    ? `\n\n前置组员的产出（可以在它基础上继续）：\n${deps
+        .map((d) => `【${d.name}】${d.output || '（没有产出）'}`)
+        .join('\n')}`
+    : '';
   return `[群协作 · 你是 ${memberName}，组长是 ${leaderName}]
 
 组长派给你的任务：
 「${task}」
 
 用户最初在群里说的原话：
-「${userText}」
+「${userText}」${depBlock}
 
-请专心完成你这一份任务，然后直接向用户汇报成果：
+请专心完成你这一份任务，然后**单独私聊向用户汇报**成果（群里只显示一行进度）：
 - 只讲你负责的这部分，别替别人发言、别复述别人的活；
-- 有结论就写结论，做了什么、发现了什么、结论是什么；
+- 有结论就写结论：做了什么、发现了什么、结论是什么；
 - 需要动手就动手（工具调用照常）；
+- 需要用户拍板、或需要密码之类的凭据，用 ask_user / connector_request，不要自己猜；
 - 篇幅控制在 300 字以内。`;
 }
 
@@ -79,10 +89,11 @@ export function summaryPrompt(
 各成员交回给你的成果：
 ${body}
 
+注意：成员们已经各自把细节**单独私聊汇报给用户**了，你在群里只需要给结论。
 请你作为组长在群里向用户做最终汇报：
 - 用一段话讲清楚最终结果（不要罗列每个组员的原话）；
 - 如果成员之间结论冲突，你来定一个结论并说明理由；
-- 如果有没做成的地方，直接说明；
+- **谁没做成、哪一步失败或被跳过，必须明确说出来**（用户只看群里这版总结）；
 - 不要再派活，不要输出 JSON；
 - 控制在 400 字以内。`;
 }
@@ -137,12 +148,16 @@ function matchMember(name: string, members: Member[]): Member | undefined {
 export function parseAssignments(text: string, members: Member[]): Assignment[] {
   const out: Assignment[] = [];
   const seen = new Set<string>();
-  const push = (name: string, task: string) => {
+  const push = (name: string, task: string, after: string[] = []) => {
     const m = matchMember(name, members);
     const key = m?.id ?? name.trim();
     if (!m || !task.trim() || seen.has(key)) return;
     seen.add(key);
-    out.push({ agent: m.name, task: task.trim() });
+    // after 里的名字也宽松匹配一次；匹配不上就丢掉，别让写错的依赖把整轮卡住
+    const deps = after
+      .map((x) => matchMember(x, members)?.name)
+      .filter((x): x is string => !!x && x !== m.name);
+    out.push({ agent: m.name, task: task.trim(), after: deps.length ? deps : undefined });
   };
 
   const json = extractJson(text);
@@ -151,7 +166,11 @@ export function parseAssignments(text: string, members: Member[]): Assignment[] 
       if (!it || typeof it !== 'object') continue;
       const name = String((it as any).agent ?? (it as any).name ?? (it as any).to ?? '');
       const task = String((it as any).task ?? (it as any).prompt ?? '');
-      push(name, task);
+      const rawAfter = (it as any).after ?? (it as any).dependsOn ?? (it as any).depends_on ?? [];
+      const after = (Array.isArray(rawAfter) ? rawAfter : [rawAfter])
+        .map((x: any) => String(x ?? '').trim())
+        .filter(Boolean);
+      push(name, task, after);
     }
   }
   if (out.length) return out;
@@ -163,6 +182,28 @@ export function parseAssignments(text: string, members: Member[]): Assignment[] 
     push(m[1], m[2]);
   }
   return out;
+}
+
+/**
+ * 把任务按 after 依赖切成"波次"：同一波并行跑，下一波等上一波。
+ * 依赖写坏（互相等）也不会卡死：剩下的直接放最后一波跑。
+ */
+export function planWaves(tasks: Assignment[], maxWaves = 6): Assignment[][] {
+  const done = new Set<string>();
+  const left = [...tasks];
+  const waves: Assignment[][] = [];
+  for (let i = 0; i < maxWaves && left.length; i++) {
+    const ready = left.filter((t) => !t.after?.length || t.after.every((n) => done.has(n)));
+    // 注意：这里必须复制一份，否则 wave 和 left 是同一个数组，边遍历边删会漏元素
+    const wave = (ready.length ? ready : left).slice();
+    waves.push(wave);
+    for (const t of wave) done.add(t.agent);
+    for (let i = left.length - 1; i >= 0; i--) {
+      if (wave.includes(left[i])) left.splice(i, 1);
+    }
+  }
+  if (left.length) waves.push(left);
+  return waves;
 }
 
 /** 去掉给用户看的那段文字里的 JSON 计划块（避免聊天里出现一大坨 JSON） */
