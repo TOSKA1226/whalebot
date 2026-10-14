@@ -107,6 +107,8 @@ export async function runAgent(params: {
   runMcpTool?: (serverId: string, tool: string, args: any) => Promise<{ ok: boolean; text: string }>;
   /** 传进来就能被用户「停止」掐断 */
   signal?: AbortSignal;
+  /** 附件：图片（可选 data URL）和文件（已落到容器的路径） */
+  attachments?: { kind: 'image' | 'file'; name: string; mime?: string; dataUrl?: string; path?: string }[];
 }): Promise<Msg[]> {
   const {
     cfg,
@@ -122,6 +124,7 @@ export async function runAgent(params: {
     extraTools = [],
     runMcpTool,
     signal,
+    attachments = [],
   } = params;
 
   const aborted = () => !!signal?.aborted;
@@ -142,7 +145,24 @@ export async function runAgent(params: {
   } else {
     messages.unshift({ role: 'system', content: sysContent });
   }
-  messages.push({ role: 'user', content: userText });
+  // 附件：能看图的模型就把图塞进多模态内容；文件一律告诉它容器里的路径
+  const fileNotes = attachments
+    .filter((a) => a.path)
+    .map((a) => `[附件] ${a.name}${a.mime ? ` (${a.mime})` : ''} 已放到容器：${a.path}`)
+    .join('\n');
+  const textWithNotes = fileNotes ? `${userText}\n\n${fileNotes}` : userText;
+  const images = cfg.vision ? attachments.filter((a) => a.kind === 'image' && a.dataUrl) : [];
+  if (images.length) {
+    messages.push({
+      role: 'user',
+      content: [
+        { type: 'text', text: textWithNotes },
+        ...images.map((a) => ({ type: 'image_url' as const, image_url: { url: a.dataUrl as string } })),
+      ],
+    });
+  } else {
+    messages.push({ role: 'user', content: textWithNotes });
+  }
 
   for (let step = 0; step < maxSteps; step++) {
     if (aborted()) {
@@ -296,7 +316,15 @@ export async function runAgent(params: {
 
       let result: any;
       try {
-        result = await execTool(cfg, spec.capability, args ?? {});
+        // 联网搜索：把用户配的 API Key / SearxNG 地址带上（不然就走免费引擎）
+        const extraArgs =
+          spec.capability === 'web.search'
+            ? {
+                apiKey: cfg.searchApiKey || undefined,
+                searxngUrl: cfg.searxngUrl || undefined,
+              }
+            : {};
+        result = await execTool(cfg, spec.capability, { ...(args ?? {}), ...extraArgs });
       } catch (e: any) {
         result = { ok: false, stderr: String(e?.message ?? e) };
       }

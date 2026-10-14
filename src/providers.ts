@@ -13,6 +13,8 @@ export type Provider = {
   baseUrl: string;
   /** 默认模型 */
   model: string;
+  /** 这一家的模型支持图片输入吗（多模态） */
+  vision?: boolean;
   note?: string;
   createdAt: number;
 };
@@ -119,6 +121,7 @@ export async function upsertProvider(input: {
   baseUrl: string;
   model: string;
   note?: string;
+  vision?: boolean;
 }): Promise<Provider> {
   const items = await listProviders();
   const idx = input.id ? items.findIndex((p) => p.id === input.id) : -1;
@@ -129,6 +132,7 @@ export async function upsertProvider(input: {
       baseUrl: input.baseUrl.trim(),
       model: input.model.trim(),
       note: input.note ?? items[idx].note,
+      vision: input.vision ?? items[idx].vision,
     };
     items[idx] = merged;
     await AsyncStorage.setItem(KEY, JSON.stringify(items));
@@ -140,6 +144,7 @@ export async function upsertProvider(input: {
     baseUrl: input.baseUrl.trim(),
     model: input.model.trim(),
     note: input.note,
+    vision: input.vision,
     createdAt: Date.now(),
   };
   items.push(p);

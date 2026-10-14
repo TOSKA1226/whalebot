@@ -13,6 +13,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
 import {
   AudioModule,
   RecordingPresets,
@@ -22,6 +24,7 @@ import {
 } from 'expo-audio';
 import { KeyboardAvoidingView } from '../kav';
 import { speak, transcribe } from '../voice';
+import { MAX_ATTACH_BYTES, uploadAttachment, type PickedAttachment } from '../attachments';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp, type Bubble } from '../app-state';
 import { Avatar } from '../avatar';
@@ -70,6 +73,7 @@ export default function ChatScreen() {
     speakingIds,
     push,
     providers,
+    openAgentChat,
   } = useApp();
   const [input, setInput] = useState('');
   const [picking, setPicking] = useState(false);
@@ -81,6 +85,71 @@ export default function ChatScreen() {
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(recorder);
   const [sttBusy, setSttBusy] = useState(false);
+  /** 附件（拍照/相册/文件），发送时先落到容器再交给模型 */
+  const [attach, setAttach] = useState<PickedAttachment[]>([]);
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [sending, setSending] = useState(false);
+
+  const addAttachment = (a: PickedAttachment) => setAttach((prev) => [...prev, a]);
+
+  const pickCamera = async () => {
+    setAttachOpen(false);
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      push('system', t('attach.noCamera'));
+      return;
+    }
+    const r = await ImagePicker.launchCameraAsync({ base64: true, quality: 0.7 });
+    if (r.canceled || !r.assets?.[0]) return;
+    const a = r.assets[0];
+    addAttachment({
+      id: `a${Date.now()}`,
+      kind: 'image',
+      name: a.fileName ?? `photo-${Date.now()}.jpg`,
+      mime: a.mimeType ?? 'image/jpeg',
+      size: a.fileSize,
+      uri: a.uri,
+      base64: a.base64 ?? undefined,
+    });
+  };
+
+  const pickLibrary = async () => {
+    setAttachOpen(false);
+    const r = await ImagePicker.launchImageLibraryAsync({ base64: true, quality: 0.7 });
+    if (r.canceled || !r.assets?.length) return;
+    for (const a of r.assets.slice(0, 4)) {
+      addAttachment({
+        id: `a${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+        kind: 'image',
+        name: a.fileName ?? 'image.jpg',
+        mime: a.mimeType ?? 'image/jpeg',
+        size: a.fileSize,
+        uri: a.uri,
+        base64: a.base64 ?? undefined,
+      });
+    }
+  };
+
+  const pickFile = async () => {
+    setAttachOpen(false);
+    const r = await DocumentPicker.getDocumentAsync({ base64: true, copyToCacheDirectory: true });
+    if (r.canceled || !r.assets?.length) return;
+    for (const a of r.assets.slice(0, 3)) {
+      if (a.size && a.size > MAX_ATTACH_BYTES) {
+        push('system', t('attach.tooBig', { name: a.name }));
+        continue;
+      }
+      addAttachment({
+        id: `a${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+        kind: 'file',
+        name: a.name,
+        mime: a.mimeType ?? 'application/octet-stream',
+        size: a.size,
+        uri: a.uri,
+        base64: (a as { base64?: string }).base64 ?? undefined,
+      });
+    }
+  };
   const insets = useSafeAreaInsets();
   const kbHeight = useKeyboardVisible();
   const kb = kbHeight > 0;
@@ -165,10 +234,27 @@ export default function ChatScreen() {
 
   const onSend = async () => {
     const text = input.trim();
-    if (!text || busy) return;
+    if ((!text && !attach.length) || busy || sending) return;
+    const files = attach;
     setInput('');
     setMentionQ(null);
-    await send(text);
+    setAttach([]);
+    setSending(true);
+    try {
+      // 附件先落到容器工作目录：模型拿到路径，容器里的工具也能直接处理
+      const enriched: PickedAttachment[] = [];
+      for (const a of files) {
+        const up = await uploadAttachment(cfg, a);
+        if (!up.ok) {
+          push('system', t('attach.uploadFailed', { name: a.name, e: up.error ?? '' }));
+          continue;
+        }
+        enriched.push({ ...a, path: up.path });
+      }
+      await send(text, enriched);
+    } finally {
+      setSending(false);
+    }
   };
 
   const toggleMember = async (id: string) => {
@@ -326,6 +412,7 @@ export default function ChatScreen() {
                 who={agentByName(it.b.speaker)}
                 agents={agents}
                 onSpeak={() => speak(it.b.text, { rate: cfg.ttsRate ?? 1 })}
+                onOpenAgent={(id) => void openAgentChat(id)}
               />
             ),
           )}
@@ -380,7 +467,32 @@ export default function ChatScreen() {
               )}
             </View>
           ) : null}
+          {attach.length ? (
+            <View style={s.attachRow}>
+              {attach.map((a) => (
+                <View key={a.id} style={s.attachChip}>
+                  <Ionicons
+                    name={a.kind === 'image' ? 'image-outline' : 'document-outline'}
+                    size={13}
+                    color="#0a84ff"
+                  />
+                  <Text style={s.attachName} numberOfLines={1}>
+                    {a.name}
+                  </Text>
+                  <TouchableOpacity
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                    onPress={() => setAttach((prev) => prev.filter((x) => x.id !== a.id))}
+                  >
+                    <Ionicons name="close-circle" size={14} color="#c7c7cc" />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+          ) : null}
           <View style={s.inputRow}>
+            <TouchableOpacity style={s.atBtn} onPress={() => setAttachOpen(true)} disabled={busy}>
+              <Ionicons name="add" size={20} color="#0a84ff" />
+            </TouchableOpacity>
             <TouchableOpacity
               style={[s.atBtn, recorderState.isRecording && s.micOn]}
               onPress={() => void onMic()}
@@ -436,6 +548,33 @@ export default function ChatScreen() {
           </View>
         </View>
       </KeyboardAvoidingView>
+
+      {/* 附件来源：拍照 / 相册 / 文件 */}
+      <Modal
+        visible={attachOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAttachOpen(false)}
+      >
+        <TouchableOpacity style={s.sheetMask} activeOpacity={1} onPress={() => setAttachOpen(false)}>
+          <View style={s.sheet}>
+            <Text style={s.sheetTitle}>{t('attach.title')}</Text>
+            <TouchableOpacity style={s.sheetRow} onPress={() => void pickCamera()}>
+              <Ionicons name="camera-outline" size={20} color="#0a84ff" />
+              <Text style={s.sheetTxt}>{t('attach.camera')}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={s.sheetRow} onPress={() => void pickLibrary()}>
+              <Ionicons name="images-outline" size={20} color="#0a84ff" />
+              <Text style={s.sheetTxt}>{t('attach.library')}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={s.sheetRow} onPress={() => void pickFile()}>
+              <Ionicons name="folder-open-outline" size={20} color="#0a84ff" />
+              <Text style={s.sheetTxt}>{t('attach.file')}</Text>
+            </TouchableOpacity>
+            <Text style={s.sheetHint}>{t('attach.hint')}</Text>
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* 群设置：改名 / 换组长 / 加减成员 */}
       <Modal visible={picking} animationType="slide" onRequestClose={() => setPicking(false)}>
@@ -551,21 +690,38 @@ function RowBubble({
   who,
   agents,
   onSpeak,
+  onOpenAgent,
 }: {
   b: Bubble;
   t: (k: any) => string;
   who?: import('../store').Agent;
   agents?: import('../store').Agent[];
   onSpeak?: () => void;
+  onOpenAgent?: (agentId: string) => void;
 }) {
   void agents;
   if (b.role === 'tool') return <ToolCard b={b} />;
   if (b.role === 'system') {
-    return (
+    const clickable = b.action?.kind === 'agent' && onOpenAgent;
+    const body = (
       <View style={s.sysRow}>
-        <Ionicons name="information-circle-outline" size={13} color="#8e8e93" />
-        <Text style={s.sysTxt}>{b.text}</Text>
+        <Ionicons
+          name={clickable ? 'mail-unread-outline' : 'information-circle-outline'}
+          size={13}
+          color={clickable ? '#0a84ff' : '#8e8e93'}
+        />
+        <Text style={[s.sysTxt, clickable && { color: '#0a84ff' }]}>{b.text}</Text>
+        {clickable ? <Ionicons name="chevron-forward" size={13} color="#0a84ff" /> : null}
       </View>
+    );
+    if (!clickable) return body;
+    return (
+      <TouchableOpacity
+        activeOpacity={0.7}
+        onPress={() => onOpenAgent?.(b.action?.agentId ?? '')}
+      >
+        {body}
+      </TouchableOpacity>
     );
   }
   if (b.role === 'error') {
@@ -810,6 +966,33 @@ const s = StyleSheet.create({
   },
   speakTxt: { fontSize: 11, color: '#8e8e93' },
   micOn: { backgroundColor: '#ff3b30' },
+  attachRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 6 },
+  attachChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#fff',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    maxWidth: '85%',
+    borderWidth: 1,
+    borderColor: '#e2e2e7',
+  },
+  attachName: { fontSize: 12, color: '#333', maxWidth: 180 },
+  sheetMask: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
+  sheet: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    paddingHorizontal: 18,
+    paddingTop: 16,
+    paddingBottom: 26,
+  },
+  sheetTitle: { fontSize: 16, fontWeight: '700', marginBottom: 8, color: '#111' },
+  sheetRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14 },
+  sheetTxt: { fontSize: 15, color: '#111' },
+  sheetHint: { fontSize: 11, color: '#999', marginTop: 8, lineHeight: 16 },
   mentionBox: {
     backgroundColor: '#fff',
     borderRadius: 12,

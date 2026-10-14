@@ -135,6 +135,7 @@ function ProviderEditor({
     model: string;
     note?: string;
     apiKey?: string;
+    vision?: boolean;
   }) => Promise<void>;
 }) {
   const { t } = useApp();
@@ -143,6 +144,7 @@ function ProviderEditor({
   const [baseUrl, setBaseUrl] = useState(editing?.baseUrl ?? '');
   const [model, setModel] = useState(editing?.model ?? '');
   const [apiKey, setApiKey] = useState('');
+  const [vision, setVision] = useState(editing?.vision === true);
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
@@ -207,6 +209,20 @@ function ProviderEditor({
           />
           <Text style={s.hint2}>{t('prov.keyHint')}</Text>
 
+          <SectionTitle>{t('field.vision')}</SectionTitle>
+          <View style={s.rowBtns}>
+            {[true, false].map((v) => (
+              <Btn
+                key={String(v)}
+                label={v ? t('review.on') : t('review.off')}
+                kind={vision === v ? 'primary' : 'ghost'}
+                style={{ flex: 1 }}
+                onPress={() => setVision(v)}
+              />
+            ))}
+          </View>
+          <Text style={s.hint2}>{t('field.visionHint')}</Text>
+
           <Btn
             label={t('agents.save')}
             onPress={() =>
@@ -216,6 +232,7 @@ function ProviderEditor({
                 baseUrl,
                 model,
                 apiKey,
+                vision,
               })
             }
             style={{ marginTop: 14 }}

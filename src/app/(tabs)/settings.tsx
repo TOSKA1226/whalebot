@@ -93,6 +93,36 @@ export default function SettingsTab() {
         </View>
         <Text style={s.hint2}>{t('settings.tools.desc')}</Text>
 
+        <SectionTitle>{t('search.section')}</SectionTitle>
+        <Field
+          label={t('search.tavily')}
+          value={draft.searchApiKey}
+          onChange={(v) => set({ searchApiKey: v })}
+          secure
+          hint="tvly-…"
+        />
+        <Field
+          label={t('search.searxng')}
+          value={draft.searxngUrl}
+          onChange={(v) => set({ searxngUrl: v })}
+          hint="https://searx.example.com"
+        />
+        <Text style={s.hint2}>{t('search.hint')}</Text>
+
+        <Text style={s.label}>{t('field.vision')}</Text>
+        <View style={s.langRow}>
+          {[true, false].map((v) => (
+            <Btn
+              key={String(v)}
+              label={v ? t('review.on') : t('review.off')}
+              kind={draft.vision === v ? 'primary' : 'ghost'}
+              style={{ flex: 1 }}
+              onPress={() => set({ vision: v })}
+            />
+          ))}
+        </View>
+        <Text style={s.hint2}>{t('field.visionHint')}</Text>
+
         <SectionTitle>{t('voice.section')}</SectionTitle>
         <View style={s.langRow}>
           {[true, false].map((v) => (
@@ -276,7 +306,11 @@ export default function SettingsTab() {
             <Text style={s.hint2}>{t('review.note')}</Text>
           </View>
         ) : null}
-        <Row title={t('btn.caps')} desc="23 项容器/手机能力 + 本地工具" onPress={() => router.push('/capabilities')} />
+        <Row
+          title={t('btn.caps')}
+          desc={t('settings.caps.desc')}
+          onPress={() => router.push('/capabilities')}
+        />
 
         <Btn label={t('settings.save')} onPress={() => saveCfg(draft)} style={{ marginTop: 18 }} />
         <Btn label={t('settings.test')} kind="ghost" onPress={() => checkHealth(draft)} style={{ marginTop: 10 }} />
