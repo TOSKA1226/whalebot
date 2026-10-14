@@ -11,13 +11,26 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import {
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { DEFAULT_CONFIG, loadConfig, saveConfig, type Config } from './config';
 import { execHealth, type Msg } from './api';
 import { initialHistory, runAgent, type AgentEvent } from './agent';
 import { makeT, type TFn } from './i18n';
 import * as store from './store';
-import { setActiveAgent as setToolAgent } from './context';
+import {
+  setActiveAgent as setToolAgent,
+  setAskUser,
+  type AskAnswer,
+  type AskRequest,
+} from './context';
 import { nextDue, startScheduler } from './scheduler';
 import { mcpToolSpecs } from './tools';
 import { diag } from './diag';
@@ -50,6 +63,21 @@ import {
 } from './notify';
 
 export type Bubble = SessionBubble;
+
+/**
+ * 一次「某个助手说一轮话」的上下文。
+ * 并行跑多个助手时，每个 run 各有一份，流式增量不会串到别人的气泡里。
+ */
+type RunCtx = {
+  agentId: string;
+  /** 群聊/多助手时标注是谁在说话；单聊不标 */
+  speaker?: string;
+  phase?: Bubble['phase'];
+  streamId: string | null;
+  toolId: string | null;
+  text: string;
+  bubbleId: string | null;
+};
 
 let seq = 0;
 export const nextId = () => `b${++seq}`;
@@ -86,8 +114,12 @@ type AppState = {
   push: (role: Bubble['role'], text: string) => string;
   /** 助手状态：在线 / 忙碌 / 下线 */
   presenceOf: (agentId: string) => 'online' | 'busy' | 'offline';
-  /** 正在生成回复的助手 id（没有则为 null） */
-  activeSpeakerId: string | null;
+  /** 这一轮的状态：idle / running / stopping */
+  runState: 'idle' | 'running' | 'stopping';
+  /** 停止这一轮（掐断流式请求；群协作里已产出的成果仍会汇总） */
+  stop: () => void;
+  /** 正在生成回复的助手 id 列表（群协作并行时会有多个） */
+  speakingIds: string[];
   /** 某助手实际生效的配置（含它自己的模型/Key） */
   effectiveCfg: (agentId: string) => Promise<Config>;
   /** 重新扫描各助手的独立 Key 状态 */
@@ -167,7 +199,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [data, setData] = useState<AppState['data']>({ memories: [], skills: [], routines: [] });
   const [agents, setAgents] = useState<store.Agent[]>([]);
   /** 正在生成回复的助手（房间成员轮流发言时也会变） */
-  const [activeSpeakerId, setActiveSpeakerId] = useState<string | null>(null);
+  /** 正在生成回复的助手（群协作并行时可能同时好几个） */
+
   /** 每个助手最近一次请求的结果，用于推算在线/下线 */
   const [agentHealth, setAgentHealth] = useState<Record<string, 'ok' | 'error'>>({});
   /** 每个助手是否配置了自己的 API Key（用于状态点） */
@@ -211,31 +244,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const roomsRef = useRef<Room[]>([]);
   const titleRef = useRef<string>('');
   const lastUserTextRef = useRef<string>('');
+  /** 审批 / 预算询问都排队：群里并行跑时可能同时有好几个要问 */
   const [pending, setPending] = useState<
     { name: string; args: any; resolve: (ok: boolean) => void } | null
   >(null);
+  const approvalQueue = useRef<{ name: string; args: any; resolve: (ok: boolean) => void }[]>([]);
+  const [pendingCount, setPendingCount] = useState(0);
   const [budgetAsk, setBudgetAsk] = useState<
     { used: number; budget: number; resolve: (extra: number) => void } | null
   >(null);
+  const budgetQueue = useRef<
+    { used: number; budget: number; resolve: (extra: number) => void }[]
+  >([]);
+  /** 这一轮的状态：idle / running / stopping（点了停止但还没收尾） */
+  const [runState, setRunState] = useState<'idle' | 'running' | 'stopping'>('idle');
+  const abortRef = useRef<AbortController | null>(null);
+  /** 正在生成回复的助手（群协作并行时可能同时好几个） */
+  const [speakingIds, setSpeakingIds] = useState<string[]>([]);
+  /** 这一轮是不是已经提示过「已停止」了（并行时好几个成员会同时被掐断） */
+  const stoppedRef = useRef(false);
 
   const t = useMemo(() => makeT(cfg.lang), [cfg.lang]);
 
   const historyRef = useRef<Msg[]>(initialHistory(DEFAULT_CONFIG.lang));
-  const streamIdRef = useRef<string | null>(null);
-  const toolIdRef = useRef<string | null>(null);
-  const lastTextRef = useRef('');
   const cfgRef = useRef(cfg);
   const tRef = useRef(t);
   const agentRef = useRef<string>(DEFAULT_CONFIG.activeAgentId);
-  const speakerRef = useRef<string | undefined>(undefined);
   const agentsRef = useRef<store.Agent[]>([]);
 
   const bubblesRef = useRef<Bubble[]>([]);
   const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** 群协作阶段标记（气泡上显示「组长派发 / 成员汇报 / 组长总结」） */
-  const phaseRef = useRef<Bubble['phase']>(undefined);
-  /** 当前这次 run 里助手气泡的 id（组长派发完要把 JSON 洗掉） */
-  const captureBubbleRef = useRef<string | null>(null);
 
   const push = useCallback(
     (
@@ -421,45 +459,117 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
       }
       return new Promise<boolean>((resolve) => {
-        setPending({ name, args, resolve });
+        approvalQueue.current.push({ name, args, resolve });
+        setPending(approvalQueue.current[0]);
+        setPendingCount(approvalQueue.current.length);
       });
     },
     [effectiveCfg, push],
   );
 
-  const onEvent = useCallback(
-    (e: AgentEvent) => {
+  /** 用户点了允许/拒绝：出队一个，接着显示下一个（并行跑时可能排着队） */
+  const resolvePending = useCallback((ok: boolean) => {
+    const cur = approvalQueue.current.shift();
+    cur?.resolve(ok);
+    setPending(approvalQueue.current[0] ?? null);
+    setPendingCount(approvalQueue.current.length);
+  }, []);
+
+  /** 问用户要不要继续加预算（并行时排队） */
+  const askBudget = useCallback(
+    (used: number, budget: number) =>
+      new Promise<number>((resolve) => {
+        budgetQueue.current.push({ used, budget, resolve });
+        setBudgetAsk(budgetQueue.current[0]);
+      }),
+    [],
+  );
+
+  /**
+   * 停止这一轮：掐断流式请求，并把挂着的审批/预算询问一起放掉
+   * （不然 runAgent 会一直等那个永远不会被点的弹窗）
+   */
+  const stop = useCallback(() => {
+    if (!abortRef.current) return;
+    setRunState('stopping');
+    while (approvalQueue.current.length) approvalQueue.current.shift()?.resolve(false);
+    setPending(null);
+    setPendingCount(0);
+    while (budgetQueue.current.length) budgetQueue.current.shift()?.resolve(0);
+    setBudgetAsk(null);
+    abortRef.current.abort();
+  }, []);
+
+  /** 用户对预算弹窗做了选择：出队（并行时可能排着队） */
+  const resolveBudget = useCallback((extra: number) => {
+    const cur = budgetQueue.current.shift();
+    cur?.resolve(extra);
+    setBudgetAsk(budgetQueue.current[0] ?? null);
+  }, []);
+
+  /* ---------- ask_user 卡片 ---------- */
+
+  const [askReq, setAskReq] = useState<AskRequest | null>(null);
+  const askQueue = useRef<{ req: AskRequest; resolve: (a: AskAnswer | null) => void }[]>([]);
+
+  useEffect(() => {
+    setAskUser(
+      (req) =>
+        new Promise<AskAnswer | null>((resolve) => {
+          askQueue.current.push({ req, resolve });
+          setAskReq((cur) => cur ?? askQueue.current[0].req);
+        }),
+    );
+    return () => setAskUser(null);
+  }, []);
+
+  const resolveAsk = useCallback((answer: AskAnswer | null) => {
+    const cur = askQueue.current.shift();
+    cur?.resolve(answer);
+    setAskReq(askQueue.current[0]?.req ?? null);
+  }, []);
+
+  const notifyStopped = useCallback(() => {
+    if (stoppedRef.current) return;
+    stoppedRef.current = true;
+    push('system', tRef.current('chat.stopped'));
+  }, [push]);
+
+  const addSpeaking = useCallback((id: string) => {
+    setSpeakingIds((p) => (p.includes(id) ? p : [...p, id]));
+  }, []);
+  const removeSpeaking = useCallback((id: string) => {
+    setSpeakingIds((p) => p.filter((x) => x !== id));
+  }, []);
+
+  /** 把 agent 事件写进 ctx 对应的气泡（并行时每个 run 各用一份） */
+  const makeOnEvent = useCallback(
+    (ctx: RunCtx) => (e: AgentEvent) => {
       switch (e.type) {
         case 'assistant_delta': {
-          lastTextRef.current += e.text;
-          if (!streamIdRef.current) {
-            streamIdRef.current = push(
-              'assistant',
-              '',
-              speakerRef.current,
-              undefined,
-              phaseRef.current,
-            );
-            captureBubbleRef.current = streamIdRef.current;
+          ctx.text += e.text;
+          if (!ctx.streamId) {
+            ctx.streamId = push('assistant', '', ctx.speaker, undefined, ctx.phase);
+            ctx.bubbleId = ctx.streamId;
           }
-          appendTo(streamIdRef.current, e.text);
+          appendTo(ctx.streamId, e.text);
           break;
         }
         case 'usage':
           setUsage({ used: e.used, budget: e.budget });
           break;
         case 'tool_start':
-          streamIdRef.current = null;
-          toolIdRef.current = push(
+          ctx.streamId = null;
+          ctx.toolId = push(
             'tool',
             `${e.name}  ${JSON.stringify(e.args).slice(0, 300)}`,
-            speakerRef.current,
+            ctx.speaker,
             { name: e.name, args: e.args },
-            phaseRef.current,
+            ctx.phase,
           );
           break;
         case 'tool_result': {
-          const id = toolIdRef.current;
+          const id = ctx.toolId;
           const ok = !!e.result?.ok;
           const brief = ok
             ? `✓ ${String(e.result.stdout ?? JSON.stringify(e.result.data ?? 'ok')).slice(0, 400)}`
@@ -467,23 +577,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (id) {
             setBubbles((prev) =>
               prev.map((b) =>
-                b.id === id ? { ...b, text: `${b.text}\n${brief}`, tool: { ...b.tool!, ok, done: true } } : b,
+                b.id === id
+                  ? { ...b, text: `${b.text}\n${brief}`, tool: { ...b.tool!, ok, done: true } }
+                  : b,
               ),
             );
           }
-          toolIdRef.current = null;
+          ctx.toolId = null;
           break;
         }
+        case 'aborted':
+          ctx.streamId = null;
+          notifyStopped();
+          break;
         case 'error':
-          streamIdRef.current = null;
-          push('error', e.message);
+          ctx.streamId = null;
+          push('error', ctx.speaker ? `${ctx.speaker}：${e.message}` : e.message);
           break;
         case 'done':
-          streamIdRef.current = null;
+          ctx.streamId = null;
           break;
       }
     },
-    [appendTo, push],
+    [appendTo, notifyStopped, push],
   );
 
   const checkHealth = useCallback(async (c?: Config) => {
@@ -554,17 +670,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async (
       agentId: string,
       prompt: string,
-      opts: { phase?: Bubble['phase']; fresh?: boolean } = {},
+      opts: {
+        phase?: Bubble['phase'];
+        fresh?: boolean;
+        signal?: AbortSignal;
+        /** 群聊里标注说话人；单聊不标 */
+        label?: boolean;
+      } = {},
     ): Promise<{ text: string; bubbleId: string | null; messages: Msg[] }> => {
       const a = agentsRef.current.find((x) => x.id === agentId);
       const c = await effectiveCfg(agentId);
-      speakerRef.current = a?.name ?? agentId;
-      phaseRef.current = opts.phase;
-      lastTextRef.current = '';
-      streamIdRef.current = null;
-      toolIdRef.current = null;
-      captureBubbleRef.current = null;
-      setActiveSpeakerId(agentId);
+      const ctx: RunCtx = {
+        agentId,
+        speaker: opts.label ? (a?.name ?? agentId) : undefined,
+        phase: opts.phase,
+        streamId: null,
+        toolId: null,
+        text: '',
+        bubbleId: null,
+      };
+      addSpeaking(agentId);
       const limit = limitFor(agentId);
       let messages: Msg[] = historyRef.current;
       try {
@@ -574,29 +699,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           agentId,
           history: opts.fresh === false ? historyRef.current : initialHistory(c.lang),
           userText: prompt,
-          onEvent,
+          onEvent: makeOnEvent(ctx),
           approve,
+          signal: opts.signal,
           extraTools: mcpToolSpecs(mcpToolsRef.current),
           runMcpTool: runMcp,
           budgetTokens: limit ?? undefined,
-          onBudget:
-            limit == null
-              ? undefined
-              : (used, budget) =>
-                  new Promise<number>((resolve) => setBudgetAsk({ used, budget, resolve })),
+          onBudget: limit == null ? undefined : askBudget,
         });
         setAgentHealth((h) => ({ ...h, [agentId]: 'ok' }));
       } catch (e: any) {
-        push('error', `${a?.name ?? agentId}：${String(e?.message ?? e)}`);
-        setAgentHealth((h) => ({ ...h, [agentId]: 'error' }));
+        if (!opts.signal?.aborted) {
+          push('error', `${a?.name ?? agentId}：${String(e?.message ?? e)}`);
+          setAgentHealth((h) => ({ ...h, [agentId]: 'error' }));
+        }
       } finally {
-        speakerRef.current = undefined;
-        phaseRef.current = undefined;
-        setActiveSpeakerId(null);
+        removeSpeaking(agentId);
       }
-      return { text: lastTextRef.current, bubbleId: captureBubbleRef.current, messages };
+      return { text: ctx.text, bubbleId: ctx.bubbleId, messages };
     },
-    [approve, effectiveCfg, limitFor, onEvent, push, runMcp],
+    [addSpeaking, approve, askBudget, effectiveCfg, limitFor, makeOnEvent, push, removeSpeaking, runMcp],
   );
 
   /**
@@ -605,7 +727,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
    * 如果用户用 @ 点名，就只有被点到的助手回答（组长和其他人都不插话）。
    */
   const runRoomTurn = useCallback(
-    async (userText: string, opts: { silentBubble?: boolean } = {}) => {
+    async (userText: string, opts: { silentBubble?: boolean; signal?: AbortSignal } = {}) => {
       const room = roomsRef.current.find((r) => r.id === roomIdRef.current);
       const roster = room
         ? rooms
@@ -617,7 +739,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (!room || !roster.length) {
         roomIdRef.current = '';
         setCurrentRoomId('');
-        return runOne(agentRef.current, userText, { fresh: false });
+        return runOne(agentRef.current, userText, { fresh: false, signal: opts.signal });
       }
       const leader = roster.find((a) => a.id === room.leaderId) ?? roster[0];
       const members = roster.filter((a) => a.id !== leader.id);
@@ -647,7 +769,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               mentioned.map((x) => x.name),
               a.name,
             ),
-            { phase: 'work' },
+            { phase: 'work', label: true, signal: opts.signal },
           );
           historyRef.current = [
             ...historyRef.current,
@@ -659,7 +781,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       // 群里只有组长一个人 → 就是普通对话
       if (!members.length) {
-        const out = await runOne(leader.id, userText);
+        const out = await runOne(leader.id, userText, { signal: opts.signal });
         historyRef.current = [...historyRef.current, { role: 'assistant', content: out.text }];
         return;
       }
@@ -668,7 +790,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const plan = await runOne(
         leader.id,
         dispatchPrompt(userText, leader.name, members.map(asMember)),
-        { phase: 'plan' },
+        { phase: 'plan', label: true, signal: opts.signal },
       );
       let visiblePlan = plan.text;
       if (plan.bubbleId) {
@@ -700,18 +822,37 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           .join('\n'),
       );
 
-      // 3) 成员各自干活，各自向用户汇报
-      const results: { name: string; task: string; output: string }[] = [];
-      for (const task of tasks) {
-        const a = members.find((x) => x.name === task.agent);
-        if (!a) continue;
-        const out = await runOne(a.id, workerPrompt(userText, task.task, leader.name, a.name), {
-          phase: 'work',
-        });
-        results.push({ name: a.name, task: task.task, output: out.text });
+      // 3) 成员各自干活、各自向用户汇报 —— 它们之间没有依赖，并行跑
+      const settled = await Promise.all(
+        tasks.map(async (task) => {
+          const a = members.find((x) => x.name === task.agent);
+          if (!a) return null;
+          const out = await runOne(
+            a.id,
+            workerPrompt(userText, task.task, leader.name, a.name),
+            { phase: 'work', label: true, signal: opts.signal },
+          );
+          return { name: a.name, task: task.task, output: out.text };
+        }),
+      );
+      const results = settled.filter(
+        (r): r is { name: string; task: string; output: string } => !!r,
+      );
+      // 中途被叫停：已经拿到的成果留在群里，剩下的不做了（也不再跑组长总结）
+      if (opts.signal?.aborted) {
+        notifyStopped();
+        for (const r of results) {
+          historyRef.current = [
+            ...historyRef.current,
+            { role: 'assistant', content: `[${r.name}] ${r.output}` },
+          ];
+        }
+        return;
+      }
+      for (const r of results) {
         historyRef.current = [
           ...historyRef.current,
-          { role: 'assistant', content: `[${a.name}] ${out.text}` },
+          { role: 'assistant', content: `[${r.name}] ${r.output}` },
         ];
       }
       if (!results.length) return;
@@ -720,23 +861,32 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       push('system', tRef.current('orchestra.collect', { n: results.length }));
       const final = await runOne(leader.id, summaryPrompt(userText, leader.name, results), {
         phase: 'summary',
+        label: true,
+        signal: opts.signal,
       });
       historyRef.current = [
         ...historyRef.current,
         { role: 'assistant', content: `[${leader.name}] ${final.text}` },
       ];
     },
-    [push, runOne],
+    [notifyStopped, push, runOne],
   );
 
   const runTurn = useCallback(
     async (userText: string, opts: { silentBubble?: boolean; agentId?: string } = {}) => {
+      // 已经有一轮在跑就不叠（用户可以先点「停止」）
+      if (abortRef.current) return '';
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+      stoppedRef.current = false;
+      setRunState('running');
       setBusy(true);
+      let answer = '';
       try {
         // 群聊会话且没有指定助手 → 走群协作编排
         if (roomIdRef.current && !opts.agentId) {
-          await runRoomTurn(userText, opts);
-          return lastTextRef.current;
+          await runRoomTurn(userText, { ...opts, signal: ctrl.signal });
+          return answer;
         }
         const who = opts.agentId ?? agentRef.current;
         lastUserTextRef.current = userText;
@@ -744,12 +894,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (!titleRef.current) {
           titleRef.current = sessions.titleFrom(userText, tRef.current('chats.untitled'));
         }
-        const out = await runOne(who, userText, { fresh: false });
+        const out = await runOne(who, userText, { fresh: false, signal: ctrl.signal });
         if (out.messages.length) historyRef.current = out.messages;
+        answer = out.text;
         return out.text;
       } finally {
+        abortRef.current = null;
+        setRunState('idle');
         setBusy(false);
-        setActiveSpeakerId(null);
+        setSpeakingIds([]);
         persistSession(true);
         await reloadData();
         await syncScheduled();
@@ -1027,12 +1180,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
    */
   const presenceOf = useCallback(
     (agentId: string): 'online' | 'busy' | 'offline' => {
-      if (activeSpeakerId === agentId) return 'busy';
+      if (speakingIds.includes(agentId)) return 'busy';
       if (!agentKeyOk(agentId)) return 'offline';
       if (agentHealth[agentId] === 'error') return 'offline';
       return 'online';
     },
-    [activeSpeakerId, agentHealth, agentKeyOk],
+    [speakingIds, agentHealth, agentKeyOk],
   );
 
   // 启动：载配置 + 通知 + 调度 + 通知回复监听
@@ -1190,7 +1343,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     clearChat,
     push,
     presenceOf,
-    activeSpeakerId,
+    runState,
+    stop,
+    speakingIds,
     effectiveCfg,
     refreshAgentKeys,
     agentHasKey,
@@ -1229,8 +1384,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   return (
     <AppCtx.Provider value={value}>
       {children}
-      <ApprovalModal pending={pending} setPending={setPending} t={t} />
-      <BudgetModal ask={budgetAsk} setAsk={setBudgetAsk} t={t} />
+      <ApprovalModal pending={pending} count={pendingCount} onResolve={resolvePending} t={t} />
+      <BudgetModal ask={budgetAsk} onResolve={resolveBudget} t={t} />
+      <AskModal
+        key={askReq ? `${askReq.title}|${askReq.fields.map((f) => f.label).join(',')}` : 'none'}
+        req={askReq}
+        onSubmit={resolveAsk}
+        t={t}
+      />
     </AppCtx.Provider>
   );
 }
@@ -1239,18 +1400,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
 function ApprovalModal({
   pending,
-  setPending,
+  count,
+  onResolve,
   t,
 }: {
-  pending: { name: string; args: any; resolve: (ok: boolean) => void } | null;
-  setPending: (v: null) => void;
+  pending: { name: string; args: any } | null;
+  count: number;
+  onResolve: (ok: boolean) => void;
   t: TFn;
 }) {
   return (
     <Modal visible={!!pending} transparent animationType="fade">
       <View style={m.mask}>
         <View style={m.card}>
-          <Text style={m.title}>{t('approval.title')}</Text>
+          <Text style={m.title}>
+            {t('approval.title')}
+            {count > 1 ? `（还有 ${count - 1} 个排队）` : ''}
+          </Text>
           <Text style={m.tool}>{pending?.name}</Text>
           <ScrollView style={{ maxHeight: 220 }}>
             <Text style={m.args}>{JSON.stringify(pending?.args, null, 2)}</Text>
@@ -1258,19 +1424,13 @@ function ApprovalModal({
           <View style={m.row}>
             <TouchableOpacity
               style={[m.btn, { backgroundColor: '#f0f0f3' }]}
-              onPress={() => {
-                pending?.resolve(false);
-                setPending(null);
-              }}
+              onPress={() => onResolve(false)}
             >
               <Text style={m.btnTxt}>{t('approval.deny')}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[m.btn, { backgroundColor: '#0a84ff' }]}
-              onPress={() => {
-                pending?.resolve(true);
-                setPending(null);
-              }}
+              onPress={() => onResolve(true)}
             >
               <Text style={[m.btnTxt, { color: '#fff' }]}>{t('approval.allow')}</Text>
             </TouchableOpacity>
@@ -1283,11 +1443,11 @@ function ApprovalModal({
 
 function BudgetModal({
   ask,
-  setAsk,
+  onResolve,
   t,
 }: {
-  ask: { used: number; budget: number; resolve: (extra: number) => void } | null;
-  setAsk: (v: null) => void;
+  ask: { used: number; budget: number } | null;
+  onResolve: (extra: number) => void;
   t: TFn;
 }) {
   return (
@@ -1301,21 +1461,131 @@ function BudgetModal({
           <View style={m.row}>
             <TouchableOpacity
               style={[m.btn, { backgroundColor: '#f0f0f3' }]}
-              onPress={() => {
-                ask?.resolve(0);
-                setAsk(null);
-              }}
+              onPress={() => onResolve(0)}
             >
               <Text style={m.btnTxt}>{t('budget.stop')}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[m.btn, { backgroundColor: '#0a84ff' }]}
-              onPress={() => {
-                ask?.resolve(100000);
-                setAsk(null);
-              }}
+              onPress={() => onResolve(100000)}
             >
               <Text style={[m.btnTxt, { color: '#fff' }]}>{t('budget.more')}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+/* ---------- ask_user：结构化提问卡片 ---------- */
+
+function AskModal({
+  req,
+  onSubmit,
+  t,
+}: {
+  req: AskRequest | null;
+  onSubmit: (answer: AskAnswer | null) => void;
+  t: TFn;
+}) {
+  const [vals, setVals] = useState<Record<string, string | string[] | boolean>>({});
+
+  if (!req) return null;
+  const keyOf = (f: { key?: string; label: string }, i: number) => f.key || f.label || `f${i}`;
+  const ready = req.fields.every((f, i) => {
+    const v = vals[keyOf(f, i)];
+    return Array.isArray(v) ? v.length > 0 : v !== undefined && v !== '';
+  });
+
+  return (
+    <Modal visible transparent animationType="fade">
+      <View style={m.mask}>
+        <View style={m.card}>
+          <Text style={m.title}>{req.title}</Text>
+          {req.description ? <Text style={m.desc}>{req.description}</Text> : null}
+          <ScrollView style={{ maxHeight: 380 }}>
+            {req.fields.map((f, i) => {
+              const k = keyOf(f, i);
+              const type = f.type ?? 'text';
+              const v = vals[k];
+              return (
+                <View key={k} style={{ marginBottom: 14 }}>
+                  <Text style={m.fieldLabel}>
+                    {f.label}
+                    {type === 'multi' ? `　（${t('ask.multiHint')}）` : ''}
+                  </Text>
+                  {type === 'select' || type === 'multi' ? (
+                    <View style={m.opts}>
+                      {(f.options ?? []).map((o) => {
+                        const on =
+                          type === 'multi'
+                            ? Array.isArray(v) && v.includes(o)
+                            : v === o;
+                        return (
+                          <TouchableOpacity
+                            key={o}
+                            style={[m.opt, on && m.optOn]}
+                            onPress={() =>
+                              setVals((prev) =>
+                                type === 'multi'
+                                  ? {
+                                      ...prev,
+                                      [k]: Array.isArray(prev[k]) && (prev[k] as string[]).includes(o)
+                                        ? (prev[k] as string[]).filter((x) => x !== o)
+                                        : [...((prev[k] as string[]) ?? []), o],
+                                    }
+                                  : { ...prev, [k]: o },
+                              )
+                            }
+                          >
+                            <Text style={[m.optTxt, on && m.optTxtOn]}>{o}</Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  ) : type === 'confirm' ? (
+                    <View style={m.row}>
+                      <TouchableOpacity
+                        style={[m.btn, { backgroundColor: v === true ? '#0a84ff' : '#f0f0f3' }]}
+                        onPress={() => setVals((prev) => ({ ...prev, [k]: true }))}
+                      >
+                        <Text style={[m.btnTxt, v === true && { color: '#fff' }]}>{t('ask.yes')}</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[m.btn, { backgroundColor: v === false ? '#0a84ff' : '#f0f0f3' }]}
+                        onPress={() => setVals((prev) => ({ ...prev, [k]: false }))}
+                      >
+                        <Text style={[m.btnTxt, v === false && { color: '#fff' }]}>{t('ask.no')}</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <TextInput
+                      style={m.input}
+                      value={typeof v === 'string' ? v : ''}
+                      onChangeText={(txt) => setVals((prev) => ({ ...prev, [k]: txt }))}
+                      placeholder={f.placeholder || t('ask.placeholder')}
+                      placeholderTextColor="#9a9a9e"
+                      multiline
+                    />
+                  )}
+                </View>
+              );
+            })}
+          </ScrollView>
+          <View style={m.row}>
+            <TouchableOpacity
+              style={[m.btn, { backgroundColor: '#f0f0f3' }]}
+              onPress={() => onSubmit(null)}
+            >
+              <Text style={m.btnTxt}>{t('ask.close')}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[m.btn, { backgroundColor: ready ? '#0a84ff' : '#b9d8ff' }]}
+              disabled={!ready}
+              onPress={() => onSubmit(vals)}
+            >
+              <Text style={[m.btnTxt, { color: '#fff' }]}>{t('ask.submit')}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1331,6 +1601,27 @@ const m = StyleSheet.create({
   tool: { fontSize: 15, color: '#0a84ff', marginBottom: 8, fontWeight: '600' },
   args: { fontFamily: 'monospace', fontSize: 12, color: '#333' },
   row: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  desc: { fontSize: 13, color: '#666', marginBottom: 10, lineHeight: 18 },
+  fieldLabel: { fontSize: 13, fontWeight: '600', color: '#333', marginBottom: 6 },
+  opts: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  opt: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: '#f0f0f3',
+  },
+  optOn: { backgroundColor: '#0a84ff' },
+  optTxt: { fontSize: 13, color: '#333' },
+  optTxtOn: { color: '#fff', fontWeight: '600' },
+  input: {
+    backgroundColor: '#f5f5f7',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: '#111',
+    minHeight: 42,
+  },
   btn: { flex: 1, paddingVertical: 11, borderRadius: 10, alignItems: 'center' },
   btnTxt: { fontWeight: '600' },
 });
