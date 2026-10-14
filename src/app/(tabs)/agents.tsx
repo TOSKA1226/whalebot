@@ -3,12 +3,23 @@ import { useState } from 'react';
 import { Modal, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../../app-state';
+import { Avatar, FamilySwatch, familyKeyForGroup } from '../../avatar';
 import { CollapsibleGroups, useGroups } from '../../groupList';
-import { Btn, Dot, Header, Row, SectionTitle } from '../../ui';
+import { Btn, Header, Row, SectionTitle } from '../../ui';
 
 export default function AgentsTab() {
-  const { t, agents, activeAgentId, saveAgent, presenceOf, agentHasKey, cfg, roomList, openRoom } =
-    useApp();
+  const {
+    t,
+    agents,
+    activeAgentId,
+    saveAgent,
+    presenceOf,
+    cfg,
+    roomList,
+    openRoom,
+    providerInfo,
+    providers,
+  } = useApp();
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState({ name: '', group: '', description: '', persona: '' });
 
@@ -31,21 +42,41 @@ export default function AgentsTab() {
           defaultOpen={(_g, items) =>
             items.some((a) => a.id === activeAgentId) || groups.length <= 2
           }
-          renderItem={(a) => (
-            <Row
-              left={<Dot state={presenceOf(a.id)} />}
-              title={`${a.name}${a.id === activeAgentId ? ` · ${t('agents.active')}` : ''}`}
-              desc={`${a.model?.trim() || cfg.model} · ${
-                agentHasKey[a.id] ? t('agents.ownKey') : t('agents.globalKey')
-              }${a.description ? ` · ${a.description}` : ''}`}
-              right={
-                <Text style={{ fontSize: 11, color: '#8e8e93' }}>
-                  {t(`presence.${presenceOf(a.id)}` as 'presence.online')}
-                </Text>
-              }
-              onPress={() => router.push(`/agent/${a.id}`)}
-            />
-          )}
+          renderGroupRight={(g) => {
+            const bound = providers.find((p) => p.id === cfg.groupProviders?.[g]);
+            return (
+              <View style={s.gRight}>
+                {bound ? <Text style={s.gProv}>{bound.name}</Text> : null}
+                <FamilySwatch familyKey={familyKeyForGroup(g, cfg.groupColors)} size={10} />
+              </View>
+            );
+          }}
+          renderItem={(a) => {
+            const info = providerInfo(a);
+            const provName = info.provider?.name ?? t('src.global');
+            const model = a.model?.trim() || info.provider?.model?.trim() || cfg.model;
+            return (
+              <Row
+                left={
+                  <Avatar
+                    agent={a}
+                    agents={agents}
+                    overrides={cfg.groupColors}
+                    presence={presenceOf(a.id)}
+                    size={34}
+                  />
+                }
+                title={`${a.name}${a.id === activeAgentId ? ` · ${t('agents.active')}` : ''}`}
+                desc={`${provName} · ${model}${a.description ? ` · ${a.description}` : ''}`}
+                right={
+                  <Text style={{ fontSize: 11, color: '#8e8e93' }}>
+                    {t(`presence.${presenceOf(a.id)}` as 'presence.online')}
+                  </Text>
+                }
+                onPress={() => router.push(`/agent/${a.id}`)}
+              />
+            );
+          }}
         />
 
         <SectionTitle>{t('room.grouplist')}</SectionTitle>
@@ -66,6 +97,17 @@ export default function AgentsTab() {
             />
           ))
         )}
+
+        <Row
+          title={t('groups.title')}
+          desc={t('groups.hint')}
+          onPress={() => router.push('/groups')}
+        />
+        <Row
+          title={t('prov.title')}
+          desc={t('prov.hint')}
+          onPress={() => router.push('/providers')}
+        />
 
         <Text style={s.hint}>{t('presence.note')}</Text>
         <Text style={s.hint}>{t('agents.hint')}</Text>
@@ -163,5 +205,7 @@ const s = StyleSheet.create({
     color: '#111',
   },
   hint: { fontSize: 12, color: '#999', marginTop: 12, lineHeight: 18 },
+  gRight: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  gProv: { fontSize: 11, color: '#8e8e93' },
   hint2: { fontSize: 11, color: '#aaa', marginTop: 4 },
 });

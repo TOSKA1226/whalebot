@@ -18,6 +18,8 @@ export type Agent = {
   model?: string;
   /** 该助手单独使用的接口地址；留空则用全局设置 */
   baseUrl?: string;
+  /** 该助手指定的模型供应商；留空 = 用所属分组绑定的供应商 */
+  providerId?: string;
   /** 该助手单独的 token 上限模式；缺省 = 跟随全局 */
   tokenLimitMode?: 'global' | 'custom' | 'unlimited';
   /** 该助手单独的 token 上限数值（mode 为 custom 时生效） */
@@ -126,6 +128,7 @@ export async function upsertAgent(input: {
   group?: string;
   model?: string;
   baseUrl?: string;
+  providerId?: string;
   tokenLimitMode?: 'global' | 'custom' | 'unlimited';
   tokenLimit?: number;
 }): Promise<Agent> {
@@ -140,6 +143,7 @@ export async function upsertAgent(input: {
       group: input.group ?? items[idx].group,
       model: input.model ?? items[idx].model,
       baseUrl: input.baseUrl ?? items[idx].baseUrl,
+      providerId: input.providerId ?? items[idx].providerId,
       tokenLimitMode: input.tokenLimitMode ?? items[idx].tokenLimitMode,
       tokenLimit: input.tokenLimit ?? items[idx].tokenLimit,
     };
@@ -153,6 +157,7 @@ export async function upsertAgent(input: {
     description: (input.description ?? '').trim(),
     persona: (input.persona ?? '').trim(),
     group: (input.group ?? '未分组').trim(),
+    providerId: input.providerId,
     tokenLimitMode: input.tokenLimitMode,
     tokenLimit: input.tokenLimit,
     createdAt: Date.now(),

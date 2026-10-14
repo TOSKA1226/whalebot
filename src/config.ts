@@ -36,6 +36,10 @@ export type Config = {
   reviewModel: string;
   /** 外接 MCP 服务器 */
   mcpServers: McpServer[];
+  /** 每个分组绑定的模型供应商 id：组内助手共用这一把 Key */
+  groupProviders: Record<string, string>;
+  /** 每个分组手动指定的色系（助手头像用） */
+  groupColors: Record<string, string>;
   /** 要不要限制单轮 token 用量 */
   tokenLimitEnabled: boolean;
   /** 单轮 token 上限（tokenLimitEnabled 为 true 时生效） */
@@ -56,6 +60,8 @@ export const DEFAULT_CONFIG: Config = {
   reviewEnabled: false,
   reviewModel: '',
   mcpServers: [],
+  groupProviders: {},
+  groupColors: {},
   tokenLimitEnabled: true,
   tokenLimit: 200000,
 };
@@ -83,6 +89,10 @@ export async function loadConfig(): Promise<Config> {
     execToken: execToken || base.execToken,
     quickActions: Array.isArray(base.quickActions) ? base.quickActions : [],
     mcpServers: Array.isArray(base.mcpServers) ? base.mcpServers : [],
+    groupProviders:
+      base.groupProviders && typeof base.groupProviders === 'object' ? base.groupProviders : {},
+    groupColors:
+      base.groupColors && typeof base.groupColors === 'object' ? base.groupColors : {},
     toolDisplay: base.toolDisplay ?? 'show',
     tokenLimitEnabled: base.tokenLimitEnabled !== false,
     tokenLimit:

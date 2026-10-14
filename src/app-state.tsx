@@ -25,9 +25,11 @@ import * as sessions from './sessions';
 import type { Session, SessionBubble } from './sessions';
 import { callTool, listTools, type McpTool } from './mcp';
 import { reviewToolCall } from './review';
-import { getSecret } from './secrets';
+import { getSecret, setSecret } from './secrets';
 import * as rooms from './rooms';
 import type { Room } from './rooms';
+import * as providerStore from './providers';
+import { providerSecret, type Provider } from './providers';
 import {
   dispatchPrompt,
   mentionPrompt,
@@ -123,6 +125,25 @@ type AppState = {
   openRoom: (roomId: string) => Promise<void>;
   /** 某助手这一轮实际生效的 token 上限（null = 不限制） */
   limitFor: (agentId: string) => number | null;
+  /** 模型供应商（接口 + Key + 默认模型） */
+  providers: Provider[];
+  /** 哪些供应商配了自己的 Key */
+  providerKeys: Record<string, boolean>;
+  /** 某助手的接口来源：助手指定 / 分组绑定 / 全局设置 */
+  providerInfo: (agent?: store.Agent) => { provider?: Provider; from: 'agent' | 'group' | 'global' };
+  saveProvider: (input: {
+    id?: string;
+    name: string;
+    baseUrl: string;
+    model: string;
+    note?: string;
+    apiKey?: string;
+  }) => Promise<Provider>;
+  deleteProvider: (id: string) => Promise<void>;
+  /** 给某个分组绑定供应商（组内助手共用这把 Key） */
+  setGroupProvider: (group: string, providerId: string) => Promise<void>;
+  /** 给某个分组指定色系（助手头像） */
+  setGroupColor: (group: string, familyKey: string) => Promise<void>;
 };
 
 const AppCtx = createContext<AppState | null>(null);
@@ -151,6 +172,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [agentHealth, setAgentHealth] = useState<Record<string, 'ok' | 'error'>>({});
   /** 每个助手是否配置了自己的 API Key（用于状态点） */
   const [agentHasKey, setAgentHasKey] = useState<Record<string, boolean>>({});
+  /** 模型供应商（一个供应商 = 一把 Key，可以按分组共用） */
+  const [providerList, setProviderList] = useState<Provider[]>([]);
+  const providersRef = useRef<Provider[]>([]);
+  /** 每个供应商自己有没有配 Key */
+  const [providerKeyMap, setProviderKeyMap] = useState<Record<string, boolean>>({});
   /** MCP：发现的工具 + 每个服务器的连接状态 */
   const [mcpTools, setMcpTools] = useState<McpTool[]>([]);
   const [mcpStatus, setMcpStatus] = useState<Record<string, string>>({});
@@ -296,24 +322,82 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setAgentHasKey(map);
   }, []);
 
-  /** 某助手实际生效的配置：优先它自己的模型/接口/Key，缺省回落全局 */
-  const effectiveCfg = useCallback(async (agentId: string): Promise<Config> => {
-    const base = cfgRef.current;
-    const a = agentsRef.current.find((x) => x.id === agentId);
-    let key = base.apiKey;
-    try {
-      const own = await getSecret(`apikey.${agentId}`);
-      if (own) key = own;
-    } catch {
-      // 读不到就用全局
+  /** 每个供应商有没有配自己的 Key */
+  const refreshProviderKeys = useCallback(async () => {
+    const map: Record<string, boolean> = {};
+    for (const p of providersRef.current) {
+      try {
+        map[p.id] = !!(await getSecret(providerSecret(p.id)));
+      } catch {
+        map[p.id] = false;
+      }
     }
-    return {
-      ...base,
-      apiKey: key,
-      model: a?.model?.trim() || base.model,
-      baseUrl: a?.baseUrl?.trim() || base.baseUrl,
-    };
+    setProviderKeyMap(map);
   }, []);
+
+  /** 这个助手的接口从哪来：助手自己指定 > 所属分组绑定 > 全局设置 */
+  const providerInfo = useCallback((agent?: store.Agent) => {
+    const g = (agent?.group ?? '').trim() || '未分组';
+    const list = providersRef.current;
+    const own = (agent?.providerId ?? '').trim();
+    if (own) {
+      const p = list.find((x) => x.id === own);
+      if (p) return { provider: p, from: 'agent' as const };
+    }
+    const gid = cfgRef.current.groupProviders?.[g];
+    if (gid) {
+      const p = list.find((x) => x.id === gid);
+      if (p) return { provider: p, from: 'group' as const };
+    }
+    return { from: 'global' as const };
+  }, []);
+
+  /**
+   * 某助手实际生效的配置：
+   *   Key：助手专属 Key → 供应商 Key → 全局 Key
+   *   模型/地址：助手单独填的 → 供应商的 → 全局的
+   */
+  const effectiveCfg = useCallback(
+    async (agentId: string): Promise<Config> => {
+      const base = cfgRef.current;
+      const a = agentsRef.current.find((x) => x.id === agentId);
+      const { provider } = providerInfo(a);
+      let key = '';
+      try {
+        const own = await getSecret(`apikey.${agentId}`);
+        if (own) key = own;
+      } catch {
+        // 读不到就往下走
+      }
+      if (!key && provider) {
+        try {
+          const pk = await getSecret(providerSecret(provider.id));
+          if (pk) key = pk;
+        } catch {
+          // 读不到就往下走
+        }
+      }
+      if (!key) key = base.apiKey;
+      return {
+        ...base,
+        apiKey: key,
+        model: a?.model?.trim() || provider?.model?.trim() || base.model,
+        baseUrl: a?.baseUrl?.trim() || provider?.baseUrl?.trim() || base.baseUrl,
+      };
+    },
+    [providerInfo],
+  );
+
+  /** 这个助手到底有没有可用的 Key（自己的 / 供应商的 / 全局的） */
+  const agentKeyOk = useCallback(
+    (agentId: string): boolean => {
+      if (agentHasKey[agentId]) return true;
+      const { provider } = providerInfo(agentsRef.current.find((x) => x.id === agentId));
+      if (provider && providerKeyMap[provider.id]) return true;
+      return !!cfgRef.current.apiKey;
+    },
+    [agentHasKey, providerInfo, providerKeyMap],
+  );
 
   /**
    * 工具审批：开了自动复核就先让便宜模型判断
@@ -846,6 +930,66 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [reloadData, startSession],
   );
 
+  /* ---------------- 模型供应商 / 分组 ---------------- */
+
+  const saveProvider = useCallback(
+    async (input: {
+      id?: string;
+      name: string;
+      baseUrl: string;
+      model: string;
+      note?: string;
+      apiKey?: string;
+    }) => {
+      const p = await providerStore.upsertProvider({
+        id: input.id,
+        name: input.name,
+        baseUrl: input.baseUrl,
+        model: input.model,
+        note: input.note,
+      });
+      if (input.apiKey !== undefined) {
+        await setSecret(providerSecret(p.id), input.apiKey.trim());
+      }
+      providersRef.current = await providerStore.listProviders();
+      setProviderList(providersRef.current);
+      await refreshProviderKeys();
+      return p;
+    },
+    [refreshProviderKeys],
+  );
+
+  const deleteProvider = useCallback(
+    async (id: string) => {
+      await providerStore.removeProvider(id);
+      await setSecret(providerSecret(id), '');
+      providersRef.current = await providerStore.listProviders();
+      setProviderList(providersRef.current);
+      await refreshProviderKeys();
+    },
+    [refreshProviderKeys],
+  );
+
+  const setGroupProvider = useCallback(async (group: string, providerId: string) => {
+    const g = group.trim() || '未分组';
+    const nextMap = { ...cfgRef.current.groupProviders };
+    if (providerId) nextMap[g] = providerId;
+    else delete nextMap[g];
+    const next = { ...cfgRef.current, groupProviders: nextMap };
+    await saveConfig(next);
+    setCfg(next);
+  }, []);
+
+  const setGroupColor = useCallback(async (group: string, familyKey: string) => {
+    const g = group.trim() || '未分组';
+    const nextMap = { ...cfgRef.current.groupColors };
+    if (familyKey) nextMap[g] = familyKey;
+    else delete nextMap[g];
+    const next = { ...cfgRef.current, groupColors: nextMap };
+    await saveConfig(next);
+    setCfg(next);
+  }, []);
+
   const setRoomMembers = useCallback(async (ids: string[]) => {
     const next = { ...cfgRef.current, roomAgentIds: ids };
     await saveConfig(next);
@@ -884,11 +1028,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const presenceOf = useCallback(
     (agentId: string): 'online' | 'busy' | 'offline' => {
       if (activeSpeakerId === agentId) return 'busy';
-      if (!agentHasKey[agentId] && !cfg.apiKey) return 'offline';
+      if (!agentKeyOk(agentId)) return 'offline';
       if (agentHealth[agentId] === 'error') return 'offline';
       return 'online';
     },
-    [activeSpeakerId, agentHealth, agentHasKey, cfg.apiKey],
+    [activeSpeakerId, agentHealth, agentKeyOk],
   );
 
   // 启动：载配置 + 通知 + 调度 + 通知回复监听
@@ -906,6 +1050,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
       const list = await store.ensureAgents();
       diag('boot', `agents loaded (${list.length})`);
+      const provs = await providerStore.ensureProviders();
+      providersRef.current = provs;
+      setProviderList(provs);
+      diag('boot', `providers loaded (${provs.length})`);
+      void refreshProviderKeys();
       const roomItems = await rooms.listRooms();
       roomsRef.current = roomItems;
       setRoomList(roomItems);
@@ -1068,6 +1217,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     deleteRoom,
     openRoom,
     limitFor,
+    providers: providerList,
+    providerKeys: providerKeyMap,
+    providerInfo,
+    saveProvider,
+    deleteProvider,
+    setGroupProvider,
+    setGroupColor,
   };
 
   return (

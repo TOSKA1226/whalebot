@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../../app-state';
+import { Avatar } from '../../avatar';
 import { nextDue, parseSchedule } from '../../scheduler';
 import { getSecret, setSecret } from '../../secrets';
 import * as store from '../../store';
@@ -18,8 +19,19 @@ import { Btn, Row, SectionTitle } from '../../ui';
 
 export default function AgentProfile() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { t, activeAgentId, saveAgent, deleteAgent, switchAgent, reloadData, refreshAgentKeys } =
-    useApp();
+  const {
+    t,
+    activeAgentId,
+    saveAgent,
+    deleteAgent,
+    switchAgent,
+    reloadData,
+    refreshAgentKeys,
+    providers,
+    providerInfo,
+    cfg,
+    agents,
+  } = useApp();
 
   const [agent, setAgent] = useState<store.Agent | undefined>();
   const [draft, setDraft] = useState({
@@ -29,6 +41,7 @@ export default function AgentProfile() {
     persona: '',
     model: '',
     baseUrl: '',
+    providerId: '',
   });
   const [limitMode, setLimitMode] = useState<'global' | 'custom' | 'unlimited'>('global');
   const [limitValue, setLimitValue] = useState('');
@@ -51,6 +64,7 @@ export default function AgentProfile() {
         persona: a.persona,
         model: a.model ?? '',
         baseUrl: a.baseUrl ?? '',
+        providerId: a.providerId ?? '',
       });
       setLimitMode(a.tokenLimitMode ?? 'global');
       setLimitValue(a.tokenLimit ? String(a.tokenLimit) : '');
@@ -88,6 +102,47 @@ export default function AgentProfile() {
       </View>
 
       <ScrollView contentContainerStyle={s.body}>
+        {agent ? (
+          <View style={s.preview}>
+            <Avatar
+              agent={{ ...agent, group: draft.group }}
+              agents={agents.map((x) => (x.id === agent.id ? { ...x, group: draft.group } : x))}
+              overrides={cfg.groupColors}
+              size={54}
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={s.previewName}>{draft.name || agent.name}</Text>
+              <Text style={s.previewSub}>
+                {(draft.group || t('agents.ungrouped')) + ' · '}
+                {providerInfo({ ...agent, group: draft.group, providerId: draft.providerId })
+                  .provider?.name ?? t('src.global')}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+
+        <SectionTitle>{t('agent.provider')}</SectionTitle>
+        <View style={s.chipRow}>
+          <TouchableOpacity
+            style={[s.chip, !draft.providerId && s.chipOn]}
+            onPress={() => setDraft({ ...draft, providerId: '' })}
+          >
+            <Text style={[s.chipTxt, !draft.providerId && s.chipTxtOn]}>
+              {t('agent.followGroup')}
+            </Text>
+          </TouchableOpacity>
+          {providers.map((p) => (
+            <TouchableOpacity
+              key={p.id}
+              style={[s.chip, draft.providerId === p.id && s.chipOn]}
+              onPress={() => setDraft({ ...draft, providerId: p.id })}
+            >
+              <Text style={[s.chipTxt, draft.providerId === p.id && s.chipTxtOn]}>{p.name}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <Text style={s.hint2}>{t('agent.providerHint')}</Text>
+
         <SectionTitle>{t('agents.name')}</SectionTitle>
         <TextInput
           style={s.input}
@@ -178,7 +233,7 @@ export default function AgentProfile() {
           autoCorrect={false}
           secureTextEntry
         />
-        <Text style={s.hint2}>{t('agent.keyHint')}</Text>
+        <Text style={s.hint2}>{t('agent.ownKeyHint')}</Text>
         {hasOwnKey ? (
           <Btn
             label={t('agent.keyClear')}
@@ -381,6 +436,9 @@ const s = StyleSheet.create({
   },
   iconTxt: { fontSize: 14 },
   body: { padding: 16, paddingBottom: 40 },
+  preview: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 4 },
+  previewName: { fontSize: 18, fontWeight: '700', color: '#111' },
+  previewSub: { fontSize: 12, color: '#888', marginTop: 3 },
   input: {
     backgroundColor: '#fff',
     borderRadius: 10,

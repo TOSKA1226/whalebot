@@ -39,6 +39,23 @@ export async function quickChat(cfg: Config, messages: Msg[], maxTokens = 200): 
   return data?.choices?.[0]?.message?.content ?? '';
 }
 
+/** 探活：拉一下 /models（OpenAI 兼容接口基本都有这个端点） */
+export async function listModels(baseUrl: string, apiKey: string): Promise<string[]> {
+  const base = (baseUrl || '').replace(/\/+$/, '');
+  if (!base) throw new Error('没填接口地址');
+  const res = await expoFetch(`${base}/models`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}：${(await res.text()).slice(0, 160)}`);
+  }
+  const data: any = await res.json();
+  const arr = data?.data ?? data?.models ?? [];
+  return (Array.isArray(arr) ? arr : [])
+    .map((m: any) => String(m?.id ?? m?.name ?? ''))
+    .filter(Boolean);
+}
+
 /** 流式对话（DeepSeek OpenAI 兼容接口），逐块回调文本增量。 */
 export async function streamChat(
   cfg: Config,
