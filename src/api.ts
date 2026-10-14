@@ -17,13 +17,19 @@ export type Msg = {
 export type ChatResult = { text: string; toolCalls: ToolCall[]; usage?: any };
 
 /** 非流式的轻量对话（给"自动复核"这类小判断用，必须便宜、必须快） */
-export async function quickChat(cfg: Config, messages: Msg[], maxTokens = 200): Promise<string> {
+export async function quickChat(
+  cfg: Config,
+  messages: Msg[],
+  maxTokens = 200,
+  signal?: AbortSignal,
+): Promise<string> {
   const res = await expoFetch(`${cfg.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${cfg.apiKey}`,
     },
+    signal,
     body: JSON.stringify({
       model: cfg.model,
       messages,
@@ -62,6 +68,8 @@ export async function streamChat(
   messages: Msg[],
   tools: any[],
   onDelta: (chunk: string) => void,
+  /** 传进来就能被「停止」掐断 */
+  signal?: AbortSignal,
 ): Promise<ChatResult> {
   const res = await expoFetch(`${cfg.baseUrl}/chat/completions`, {
     method: 'POST',
@@ -69,6 +77,7 @@ export async function streamChat(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${cfg.apiKey}`,
     },
+    signal,
     body: JSON.stringify({
       model: cfg.model,
       messages,

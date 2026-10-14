@@ -13,3 +13,31 @@ export function setActiveAgent(id: string) {
 export function getActiveAgent(): string {
   return activeAgentId;
 }
+
+/* ---------- 结构化提问卡片（ask_user 工具用） ---------- */
+
+export type AskFieldType = 'select' | 'multi' | 'text' | 'confirm';
+
+export type AskField = {
+  key?: string;
+  label: string;
+  type?: AskFieldType;
+  options?: string[];
+  placeholder?: string;
+};
+
+export type AskRequest = { title: string; description?: string; fields: AskField[] };
+/** 用户的答案：key -> 选项/文本/是否；null = 用户关掉了卡片 */
+export type AskAnswer = Record<string, string | string[] | boolean>;
+
+let asker: ((req: AskRequest) => Promise<AskAnswer | null>) | null = null;
+
+/** app-state 在挂载时把自己注册进来（UI 层负责弹卡片） */
+export function setAskUser(fn: ((req: AskRequest) => Promise<AskAnswer | null>) | null) {
+  asker = fn;
+}
+
+export async function askUser(req: AskRequest): Promise<AskAnswer | null> {
+  if (!asker) return null;
+  return asker(req);
+}

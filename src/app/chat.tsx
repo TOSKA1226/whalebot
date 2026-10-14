@@ -57,6 +57,9 @@ export default function ChatScreen() {
     currentRoomAgents,
     updateRoom,
     providerInfo,
+    stop,
+    runState,
+    speakingIds,
   } = useApp();
   const [input, setInput] = useState('');
   const [picking, setPicking] = useState(false);
@@ -75,6 +78,7 @@ export default function ChatScreen() {
 
   const inRoom = !!currentRoom;
   const agentByName = (n?: string) => (n ? agents.find((a) => a.name === n) : undefined);
+  const speakingNames = agents.filter((a) => speakingIds.includes(a.id)).map((a) => a.name);
   const roster = inRoom ? currentRoomAgents : agents.filter((a) => a.id === activeAgentId);
   const main = inRoom
     ? currentRoomAgents.find((a) => a.id === currentRoom?.leaderId)
@@ -270,8 +274,15 @@ export default function ChatScreen() {
             <View style={s.working}>
               <ActivityIndicator size="small" />
               <Text style={s.workingTxt}>
-                {inRoom && main ? t('orchestra.working', { name: main.name }) : ''}
+                {speakingNames.length
+                  ? t('orchestra.working', { name: speakingNames.join('、') })
+                  : inRoom && main
+                    ? t('orchestra.working', { name: main.name })
+                    : ''}
               </Text>
+              <TouchableOpacity onPress={stop} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Text style={s.stopLink}>{t('chat.stop')}</Text>
+              </TouchableOpacity>
             </View>
           ) : null}
         </ScrollView>
@@ -331,13 +342,23 @@ export default function ChatScreen() {
               multiline
               editable={!busy}
             />
-            <TouchableOpacity
-              style={[s.sendBtn, busy && { opacity: 0.5 }]}
-              onPress={onSend}
-              disabled={busy}
-            >
-              <Ionicons name="arrow-up" size={18} color="#fff" />
-            </TouchableOpacity>
+            {busy ? (
+              <TouchableOpacity
+                style={[s.sendBtn, s.stopBtn]}
+                onPress={stop}
+                disabled={runState === 'stopping'}
+              >
+                {runState === 'stopping' ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Ionicons name="stop" size={16} color="#fff" />
+                )}
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity style={s.sendBtn} onPress={onSend}>
+                <Ionicons name="arrow-up" size={18} color="#fff" />
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -650,7 +671,8 @@ const s = StyleSheet.create({
   },
   sysTxt: { flex: 1, fontSize: 12, color: '#8e8e93', lineHeight: 17 },
   working: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
-  workingTxt: { fontSize: 12, color: '#8e8e93' },
+  workingTxt: { flex: 1, fontSize: 12, color: '#8e8e93' },
+  stopLink: { fontSize: 12, color: '#ff3b30', fontWeight: '600' },
   toolGroup: { marginBottom: 8 },
   toolCard: {
     backgroundColor: '#fff8e6',
@@ -696,6 +718,7 @@ const s = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
+  stopBtn: { backgroundColor: '#ff3b30' },
   mentionBox: {
     backgroundColor: '#fff',
     borderRadius: 12,

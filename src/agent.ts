@@ -4,6 +4,7 @@ import { resolveLang, systemPrompt, type Lang } from './i18n';
 import { LOCAL_HANDLERS } from './localTools';
 import type { ToolSpec } from './tools';
 import * as store from './store';
+import { getActiveAgent } from './context';
 import type { Config } from './config';
 
 export type AgentEvent =
@@ -14,6 +15,8 @@ export type AgentEvent =
   | { type: 'usage'; used: number; budget: number }
   | { type: 'budget_exceeded'; used: number; budget: number }
   | { type: 'error'; message: string }
+  /** 用户点了「停止」 */
+  | { type: 'aborted' }
   | { type: 'done' };
 
 export type Approver = (name: string, args: any) => Promise<boolean>;
@@ -102,6 +105,8 @@ export async function runAgent(params: {
   extraTools?: ToolSpec[];
   /** 执行外部 MCP 工具 */
   runMcpTool?: (serverId: string, tool: string, args: any) => Promise<{ ok: boolean; text: string }>;
+  /** 传进来就能被用户「停止」掐断 */
+  signal?: AbortSignal;
 }): Promise<Msg[]> {
   const {
     cfg,
@@ -116,7 +121,10 @@ export async function runAgent(params: {
     onBudget,
     extraTools = [],
     runMcpTool,
+    signal,
   } = params;
+
+  const aborted = () => !!signal?.aborted;
 
   const allTools = [...TOOLS, ...extraTools];
   const toolSchemas = allTools.map((t) => ({
@@ -137,12 +145,27 @@ export async function runAgent(params: {
   messages.push({ role: 'user', content: userText });
 
   for (let step = 0; step < maxSteps; step++) {
+    if (aborted()) {
+      onEvent({ type: 'aborted' });
+      onEvent({ type: 'done' });
+      return messages;
+    }
     let res: ChatResult;
     try {
-      res = await streamChat(cfg, messages, toolSchemas, (t) =>
-        onEvent({ type: 'assistant_delta', text: t }),
+      res = await streamChat(
+        cfg,
+        messages,
+        toolSchemas,
+        (t) => onEvent({ type: 'assistant_delta', text: t }),
+        signal,
       );
     } catch (e: any) {
+      // 用户主动停止：不算错误，已经产出的内容留着
+      if (aborted()) {
+        onEvent({ type: 'aborted' });
+        onEvent({ type: 'done' });
+        return messages;
+      }
       onEvent({ type: 'error', message: String(e?.message ?? e) });
       onEvent({ type: 'done' });
       return messages;
@@ -175,6 +198,8 @@ export async function runAgent(params: {
     }
 
     for (const call of res.toolCalls) {
+      // 用户点了停止：剩下的工具就别跑了
+      if (aborted()) break;
       let args: any = {};
       try {
         args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
@@ -198,7 +223,10 @@ export async function runAgent(params: {
         const handler = LOCAL_HANDLERS[spec.capability];
         let result: any;
         try {
-          result = handler ? await handler(args) : { ok: false, stderr: '本地工具未实现' };
+          // 并行跑多个助手时，agentId 必须随调用传进去（不能用全局的"当前助手"）
+          result = handler
+            ? await handler(args, { agentId: agentId ?? getActiveAgent() })
+            : { ok: false, stderr: '本地工具未实现' };
         } catch (e: any) {
           result = { ok: false, stderr: String(e?.message ?? e) };
         }
