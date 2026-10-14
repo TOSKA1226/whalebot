@@ -89,6 +89,75 @@ export async function listTools(server: McpServer): Promise<McpTool[]> {
   }));
 }
 
+/**
+ * 探活 + 自动命名：握手时拿服务器的 serverInfo.name，
+ * 用来给「粘贴一个地址就接上」的一键接入流程自动填名字。
+ */
+export async function probeServer(server: McpServer): Promise<{
+  ok: boolean;
+  name?: string;
+  version?: string;
+  tools: McpTool[];
+  error?: string;
+}> {
+  try {
+    const init = await rpc(server, 'initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'whalebot', version: '1.0' },
+    });
+    const out = await rpc(server, 'tools/list', {});
+    const list: any[] = out?.tools ?? [];
+    return {
+      ok: true,
+      name: String(init?.serverInfo?.name ?? '').trim() || undefined,
+      version: String(init?.serverInfo?.version ?? '').trim() || undefined,
+      tools: list.map((t) => ({
+        serverId: server.id,
+        serverName: server.name,
+        name: String(t?.name ?? ''),
+        description: String(t?.description ?? ''),
+        inputSchema: t?.inputSchema ?? { type: 'object', properties: {} },
+      })),
+    };
+  } catch (e: any) {
+    return { ok: false, tools: [], error: String(e?.message ?? e) };
+  }
+}
+
+/** 内置的常用 MCP 服务器（点一下就把地址填好） */
+export const MCP_CATALOG: {
+  name: string;
+  url: string;
+  note: string;
+  /** true = 需要先改地址里的路径/参数 */
+  needsEdit?: boolean;
+}[] = [
+  {
+    name: '文件系统（@modelcontextprotocol/server-filesystem）',
+    url: 'http://127.0.0.1:8932/mcp',
+    note: '需要本地跑这个 MCP 服务器；用下面的命令或你自己的部署',
+    needsEdit: true,
+  },
+  {
+    name: 'Fetch（抓网页）',
+    url: 'http://127.0.0.1:8933/mcp',
+    note: '把网页转成 markdown 给模型看',
+    needsEdit: true,
+  },
+  {
+    name: 'whalebot 测试服务器',
+    url: 'http://127.0.0.1:8931/mcp',
+    note: '容器里已跑着的测试服务（now / echo / sum）',
+  },
+  {
+    name: '自定义地址',
+    url: '',
+    note: '自己填 Streamable HTTP 地址',
+    needsEdit: true,
+  },
+];
+
 /** 调用工具，返回纯文本结果 */
 export async function callTool(
   server: McpServer,

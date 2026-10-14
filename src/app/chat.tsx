@@ -13,7 +13,15 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import {
+  AudioModule,
+  RecordingPresets,
+  setAudioModeAsync,
+  useAudioRecorder,
+  useAudioRecorderState,
+} from 'expo-audio';
 import { KeyboardAvoidingView } from '../kav';
+import { speak, transcribe } from '../voice';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp, type Bubble } from '../app-state';
 import { Avatar } from '../avatar';
@@ -60,6 +68,8 @@ export default function ChatScreen() {
     stop,
     runState,
     speakingIds,
+    push,
+    providers,
   } = useApp();
   const [input, setInput] = useState('');
   const [picking, setPicking] = useState(false);
@@ -67,6 +77,10 @@ export default function ChatScreen() {
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   /** 输入 @ 时的候选助手；null = 不显示候选条 */
   const [mentionQ, setMentionQ] = useState<string | null>(null);
+  /** 语音输入（录音 → 转写 → 填进输入框） */
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorderState = useAudioRecorderState(recorder);
+  const [sttBusy, setSttBusy] = useState(false);
   const insets = useSafeAreaInsets();
   const kbHeight = useKeyboardVisible();
   const kb = kbHeight > 0;
@@ -109,6 +123,44 @@ export default function ChatScreen() {
   const insertMention = (name: string) => {
     setInput((prev) => prev.replace(/@([^\s@]*)$/, `@${name} `));
     setMentionQ(null);
+  };
+
+  const onMic = async () => {
+    try {
+      if (recorderState.isRecording) {
+        await recorder.stop();
+        const uri = recorder.uri;
+        if (!uri) {
+          push('system', t('voice.noAudio'));
+          return;
+        }
+        setSttBusy(true);
+        const prov = providers.find((p) => p.id === cfg.sttProviderId);
+        const r = await transcribe(cfg, uri, {
+          baseUrl: prov?.baseUrl || cfg.baseUrl,
+          apiKey: cfg.apiKey,
+          model: cfg.sttModel,
+        });
+        setSttBusy(false);
+        if (r.ok && r.text) {
+          setInput((prev) => (prev ? `${prev} ${r.text}` : (r.text as string)));
+        } else {
+          push('system', t('voice.sttFailed', { e: r.error ?? '' }));
+        }
+        return;
+      }
+      const perm = await AudioModule.requestRecordingPermissionsAsync();
+      if (!perm.granted) {
+        push('system', t('voice.noPerm'));
+        return;
+      }
+      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+    } catch (e: any) {
+      setSttBusy(false);
+      push('system', t('voice.sttFailed', { e: String(e?.message ?? e) }));
+    }
   };
 
   const onSend = async () => {
@@ -267,7 +319,14 @@ export default function ChatScreen() {
                 t={t}
               />
             ) : (
-              <RowBubble key={it.key} b={it.b} t={t} who={agentByName(it.b.speaker)} agents={agents} />
+              <RowBubble
+                key={it.key}
+                b={it.b}
+                t={t}
+                who={agentByName(it.b.speaker)}
+                agents={agents}
+                onSpeak={() => speak(it.b.text, { rate: cfg.ttsRate ?? 1 })}
+              />
             ),
           )}
           {busy ? (
@@ -322,6 +381,21 @@ export default function ChatScreen() {
             </View>
           ) : null}
           <View style={s.inputRow}>
+            <TouchableOpacity
+              style={[s.atBtn, recorderState.isRecording && s.micOn]}
+              onPress={() => void onMic()}
+              disabled={sttBusy}
+            >
+              {sttBusy ? (
+                <ActivityIndicator size="small" color="#0a84ff" />
+              ) : (
+                <Ionicons
+                  name={recorderState.isRecording ? 'stop' : 'mic'}
+                  size={18}
+                  color={recorderState.isRecording ? '#fff' : '#0a84ff'}
+                />
+              )}
+            </TouchableOpacity>
             {inRoom ? (
               <TouchableOpacity
                 style={s.atBtn}
@@ -476,11 +550,13 @@ function RowBubble({
   t,
   who,
   agents,
+  onSpeak,
 }: {
   b: Bubble;
   t: (k: any) => string;
   who?: import('../store').Agent;
   agents?: import('../store').Agent[];
+  onSpeak?: () => void;
 }) {
   void agents;
   if (b.role === 'tool') return <ToolCard b={b} />;
@@ -518,6 +594,12 @@ function RowBubble({
       <View style={[s.bubble, mine ? s.bubbleUser : s.bubbleAssistant, tint]}>
         <Text style={[s.bubbleTxt, mine && { color: '#fff' }]}>{b.text}</Text>
       </View>
+      {!mine && b.role === 'assistant' && b.text.trim() && onSpeak ? (
+        <TouchableOpacity onPress={onSpeak} style={s.speakBtn}>
+          <Ionicons name="volume-medium-outline" size={14} color="#8e8e93" />
+          <Text style={s.speakTxt}>{t('voice.read')}</Text>
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 }
@@ -719,6 +801,15 @@ const s = StyleSheet.create({
     paddingVertical: 12,
   },
   stopBtn: { backgroundColor: '#ff3b30' },
+  speakBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginTop: 3,
+    paddingHorizontal: 4,
+  },
+  speakTxt: { fontSize: 11, color: '#8e8e93' },
+  micOn: { backgroundColor: '#ff3b30' },
   mentionBox: {
     backgroundColor: '#fff',
     borderRadius: 12,

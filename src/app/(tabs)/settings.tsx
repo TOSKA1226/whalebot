@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../../app-state';
+import { speak } from '../../voice';
 import { useGroups } from '../../groupList';
 import type { Config, ToolDisplay } from '../../config';
 import type { Lang } from '../../i18n';
@@ -92,6 +93,62 @@ export default function SettingsTab() {
         </View>
         <Text style={s.hint2}>{t('settings.tools.desc')}</Text>
 
+        <SectionTitle>{t('voice.section')}</SectionTitle>
+        <View style={s.langRow}>
+          {[true, false].map((v) => (
+            <Btn
+              key={String(v)}
+              label={v ? t('review.on') : t('review.off')}
+              kind={draft.ttsAuto === v ? 'primary' : 'ghost'}
+              style={{ flex: 1 }}
+              onPress={() => set({ ttsAuto: v })}
+            />
+          ))}
+        </View>
+        <Text style={s.label}>{t('voice.rate')}</Text>
+        <View style={s.langRow}>
+          {[0.8, 1, 1.3, 1.6].map((r) => (
+            <Btn
+              key={r}
+              label={`${r}×`}
+              kind={draft.ttsRate === r ? 'primary' : 'ghost'}
+              style={{ flex: 1 }}
+              onPress={() => set({ ttsRate: r })}
+            />
+          ))}
+        </View>
+        <Btn
+          label={t('voice.test')}
+          kind="ghost"
+          onPress={() => speak(t('voice.testText'), { rate: draft.ttsRate })}
+        />
+
+        <Text style={s.label}>{t('voice.stt')}</Text>
+        <View style={s.langRow}>
+          <Btn
+            label={t('voice.sttGlobal')}
+            kind={!draft.sttProviderId ? 'primary' : 'ghost'}
+            style={{ flex: 1 }}
+            onPress={() => set({ sttProviderId: '' })}
+          />
+          {providers.map((p) => (
+            <Btn
+              key={p.id}
+              label={p.name}
+              kind={draft.sttProviderId === p.id ? 'primary' : 'ghost'}
+              style={{ flex: 1 }}
+              onPress={() => set({ sttProviderId: p.id })}
+            />
+          ))}
+        </View>
+        <Field
+          label={t('voice.sttModel')}
+          value={draft.sttModel}
+          onChange={(v) => set({ sttModel: v })}
+          hint="whisper-1 / FunAudioLLM/SenseVoiceSmall"
+        />
+        <Text style={s.hint2}>{t('voice.sttHint')}</Text>
+
         <SectionTitle>{t('budget.section')}</SectionTitle>
         <Text style={s.label}>{t('budget.limit')}</Text>
         <View style={s.langRow}>
@@ -130,6 +187,16 @@ export default function SettingsTab() {
         ) : null}
         <Text style={s.hint2}>{t('budget.limitHint')}</Text>
 
+        <Row
+          title={t('conn.title')}
+          desc={t('settings.conn.desc', { n: (cfg.connectors ?? []).length })}
+          onPress={() => router.push('/connectors')}
+        />
+        <Row
+          title={t('tpl.title')}
+          desc={t('settings.tpl.desc')}
+          onPress={() => router.push('/template')}
+        />
         <Row
           title={t('perm.title')}
           desc={t('settings.perm.desc', { n: ruleCount })}

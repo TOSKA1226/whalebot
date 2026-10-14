@@ -173,6 +173,24 @@ export const TOOLS: ToolSpec[] = [
 
   // ---------- 本地（App 自己执行）----------
   {
+    name: 'connector_request',
+    capability: 'connector_request',
+    needsApproval: true,
+    local: true,
+    description:
+      '通过已配置的「连接器」发一次 HTTP 请求（GitHub、Notion、自建 API 等）。凭据由 App 注入，你看不到明文 —— 需要长期凭据的外部服务都用它，不要用 credential_get 去拿密码。',
+    parameters: obj(
+      {
+        connector: { type: 'string', description: '连接器的引用名，例如 github' },
+        path: { type: 'string', description: '路径，例如 /user 或 /repos/owner/repo/issues' },
+        method: { type: 'string', description: 'GET / POST / PUT / PATCH / DELETE，默认 GET' },
+        query: { type: 'object', description: 'URL 查询参数（可选）' },
+        body: { type: 'object', description: 'JSON 请求体（POST/PUT/PATCH 用）' },
+      },
+      ['connector', 'path'],
+    ),
+  },
+  {
     name: 'credential_list',
     capability: 'credential_list',
     needsApproval: false,

@@ -225,7 +225,7 @@ export async function runAgent(params: {
         try {
           // 并行跑多个助手时，agentId 必须随调用传进去（不能用全局的"当前助手"）
           result = handler
-            ? await handler(args, { agentId: agentId ?? getActiveAgent() })
+            ? await handler(args, { agentId: agentId ?? getActiveAgent(), cfg })
             : { ok: false, stderr: '本地工具未实现' };
         } catch (e: any) {
           result = { ok: false, stderr: String(e?.message ?? e) };
