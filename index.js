@@ -8,6 +8,14 @@ const { installErrorReport, diag } = require('./src/diag');
 installErrorReport();
 diag('boot', 'entry: js started');
 
+// 后台任务必须在全局作用域注册：App 被系统唤起来跑后台任务时，走的就是这个入口
+try {
+  require('./src/background');
+  diag('boot', 'entry: background task registered');
+} catch (e) {
+  diag('entry-bg-fail', { message: e && e.message });
+}
+
 try {
   require('expo-router/entry');
   diag('boot', 'entry: expo-router loaded');

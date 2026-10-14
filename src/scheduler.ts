@@ -71,6 +71,25 @@ export function isDue(routine: store.Routine, now = Date.now()): boolean {
   return due !== null && due <= now;
 }
 
+/**
+ * 取出「到点该跑」的例程，并**先**把运行时间标记掉（避免前台心跳和后台任务同时触发同一个例程）。
+ * 前台调度器和后台任务共用这一份。
+ */
+export async function takeDueRoutines(now = Date.now()): Promise<store.Routine[]> {
+  const routines = await store.listRoutines();
+  const hit: store.Routine[] = [];
+  for (const r of routines) {
+    if (!r.enabled) continue;
+    if (!parseSchedule(r.schedule)) continue;
+    if (!isDue(r, now)) continue;
+    await store.setRoutineLastRun(r.id, now);
+    // 一次性例程：触发后立即暂停，避免重复提醒
+    if (r.once) await store.setRoutineEnabled(r.id, false);
+    hit.push(r);
+  }
+  return hit;
+}
+
 export type FireHandler = (routine: store.Routine) => Promise<void>;
 export type StatusHandler = (state: { running: boolean; lastTickAt: number; nextAt?: number }) => void;
 
@@ -80,15 +99,9 @@ let timer: ReturnType<typeof setInterval> | null = null;
 export function startScheduler(onFire: FireHandler, onStatus?: StatusHandler) {
   const tick = async () => {
     const routines = await store.listRoutines();
-    const now = Date.now();
-    for (const r of routines) {
-      if (!r.enabled) continue;
-      if (!parseSchedule(r.schedule)) continue;
-      if (!isDue(r, now)) continue;
-      // 先标记运行时间，避免同一轮重复触发
-      await store.setRoutineLastRun(r.id, now);
-      // 一次性例程：触发后立即暂停，避免重复提醒
-      if (r.once) await store.setRoutineEnabled(r.id, false);
+    // 和后台任务共用同一份"取到点例程"的逻辑，避免两边同时触发同一个
+    const due = await takeDueRoutines();
+    for (const r of due) {
       try {
         await onFire(r);
       } catch {

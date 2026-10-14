@@ -40,6 +40,8 @@ export type Config = {
   groupProviders: Record<string, string>;
   /** 每个分组手动指定的色系（助手头像用） */
   groupColors: Record<string, string>;
+  /** 永久工具权限规则：agentId（或 '*'）→ 工具名 → allow/deny */
+  permRules: Record<string, Record<string, 'allow' | 'deny'>>;
   /** 要不要限制单轮 token 用量 */
   tokenLimitEnabled: boolean;
   /** 单轮 token 上限（tokenLimitEnabled 为 true 时生效） */
@@ -62,6 +64,7 @@ export const DEFAULT_CONFIG: Config = {
   mcpServers: [],
   groupProviders: {},
   groupColors: {},
+  permRules: {},
   tokenLimitEnabled: true,
   tokenLimit: 200000,
 };
@@ -93,6 +96,7 @@ export async function loadConfig(): Promise<Config> {
       base.groupProviders && typeof base.groupProviders === 'object' ? base.groupProviders : {},
     groupColors:
       base.groupColors && typeof base.groupColors === 'object' ? base.groupColors : {},
+    permRules: base.permRules && typeof base.permRules === 'object' ? base.permRules : {},
     toolDisplay: base.toolDisplay ?? 'show',
     tokenLimitEnabled: base.tokenLimitEnabled !== false,
     tokenLimit:

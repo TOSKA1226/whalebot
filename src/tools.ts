@@ -14,6 +14,8 @@ export type ToolSpec = {
   parameters: any;
   /** true = 由 App 本地执行（记忆/技能/例程），不走容器 */
   local?: boolean;
+  /** true = 每次都问（不给「永久允许」选项，凭据类工具用） */
+  alwaysAsk?: boolean;
 };
 
 const obj = (props: Record<string, any>, required: string[] = []) => ({
@@ -170,6 +172,30 @@ export const TOOLS: ToolSpec[] = [
   },
 
   // ---------- 本地（App 自己执行）----------
+  {
+    name: 'credential_list',
+    capability: 'credential_list',
+    needsApproval: false,
+    local: true,
+    description: '列出凭据库里有哪些凭据（只给名字和说明，永远不返回明文）。需要密码/token 时先看这里有什么。',
+    parameters: obj({}),
+  },
+  {
+    name: 'credential_get',
+    capability: 'credential_get',
+    needsApproval: true,
+    alwaysAsk: true,
+    local: true,
+    description:
+      '取出某个凭据的明文值（按引用名）。每次都要用户批准，用户拒绝就不要重试。拿到后只在当次任务里用，不要复述给用户。',
+    parameters: obj(
+      {
+        name: { type: 'string', description: '凭据的引用名，例如 github_token' },
+        reason: { type: 'string', description: '为什么要用它（会显示在审批卡上）' },
+      },
+      ['name'],
+    ),
+  },
   {
     name: 'ask_user',
     capability: 'ask_user',

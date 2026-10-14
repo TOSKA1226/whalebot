@@ -4,6 +4,7 @@
  */
 import * as store from './store';
 import { askUser, type AskAnswer, type AskField } from './context';
+import * as vault from './vault';
 
 export type LocalResult = { ok: boolean; stdout?: string; stderr?: string; data?: any };
 
@@ -124,6 +125,37 @@ export const LOCAL_HANDLERS: Record<string, Handler> = {
         .map((r) => `- ${r.name}${r.enabled ? '' : '（已暂停）'} @ ${r.schedule || '未指定'}`)
         .join('\n'),
       data: items,
+    };
+  },
+
+  /** 凭据清单（只有元数据，永远不给明文） */
+  credential_list: async () => {
+    const items = await vault.listCredentials();
+    if (!items.length) {
+      return { ok: true, stdout: '（凭据库是空的，让用户去「设置 → 凭据库」加一条）', data: [] };
+    }
+    return {
+      ok: true,
+      stdout: items
+        .map((c) => `- ${c.name}${c.label ? `：${c.label}` : ''}`)
+        .join('\n'),
+      data: items.map((c) => ({ name: c.name, label: c.label })),
+    };
+  },
+
+  /** 取凭据明文（调用前已经过用户批准） */
+  credential_get: async (args) => {
+    const name = str(args.name).trim();
+    if (!name) return { ok: false, stderr: '缺少 name' };
+    const c = await vault.findCredential(name);
+    if (!c) return { ok: false, stderr: `凭据库里没有「${name}」` };
+    const value = await vault.credentialValue(c.id);
+    if (!value) return { ok: false, stderr: `凭据「${c.name}」还没有填值` };
+    await vault.touchCredential(c.id);
+    return {
+      ok: true,
+      stdout: `凭据 ${c.name} 的值：${value}\n（只在这次任务里用，不要复述给用户，也不要写进任何会长期保存的地方）`,
+      data: { name: c.name, value },
     };
   },
 

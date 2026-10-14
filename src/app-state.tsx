@@ -32,7 +32,7 @@ import {
   type AskRequest,
 } from './context';
 import { nextDue, startScheduler } from './scheduler';
-import { mcpToolSpecs } from './tools';
+import { mcpToolSpecs, TOOLS } from './tools';
 import { diag } from './diag';
 import * as sessions from './sessions';
 import type { Session, SessionBubble } from './sessions';
@@ -43,6 +43,15 @@ import * as rooms from './rooms';
 import type { Room } from './rooms';
 import * as providerStore from './providers';
 import { providerSecret, type Provider } from './providers';
+import { pickProvider, resolveAgentCfg } from './agentCfg';
+import * as runsStore from './runs';
+import { addRun, newRunId, type RunLog, type RunTool } from './runs';
+import * as vault from './vault';
+import {
+  backgroundStatus,
+  disableBackgroundRoutines,
+  enableBackgroundRoutines,
+} from './background';
 import {
   dispatchPrompt,
   mentionPrompt,
@@ -77,6 +86,10 @@ type RunCtx = {
   toolId: string | null;
   text: string;
   bubbleId: string | null;
+  /** 这一轮用到的工具（写运行日志用） */
+  tools: RunTool[];
+  tokens?: number;
+  error?: string;
 };
 
 let seq = 0;
@@ -176,6 +189,32 @@ type AppState = {
   setGroupProvider: (group: string, providerId: string) => Promise<void>;
   /** 给某个分组指定色系（助手头像） */
   setGroupColor: (group: string, familyKey: string) => Promise<void>;
+  /* ---- P1：权限规则 / 运行日志 / 凭据库 / 后台常驻 ---- */
+  /** 永久权限规则：agentId（或 '*'）→ 工具 → allow/deny */
+  permRules: Record<string, Record<string, 'allow' | 'deny'>>;
+  /** 写/删一条永久规则（decision 传 null = 删除这条） */
+  savePermRule: (agentId: string, tool: string, decision: 'allow' | 'deny' | null) => Promise<void>;
+  /** 本会话临时允许的条目（`agentId:tool`），重启即失效 */
+  sessionAllows: string[];
+  clearSessionAllows: () => void;
+  /** 运行日志（最近 200 条） */
+  runs: RunLog[];
+  reloadRuns: () => Promise<void>;
+  clearRuns: () => Promise<void>;
+  /** 凭据库（只有元数据，值在 SecureStore 里） */
+  credentials: vault.Credential[];
+  reloadCredentials: () => Promise<void>;
+  saveCredential: (input: {
+    id?: string;
+    name: string;
+    label?: string;
+    value?: string;
+  }) => Promise<vault.Credential>;
+  deleteCredential: (id: string) => Promise<void>;
+  /** 后台常驻（WorkManager）状态与开关 */
+  bg: { available: boolean; registered: boolean };
+  toggleBackground: (on: boolean) => Promise<void>;
+  refreshBackground: () => Promise<void>;
 };
 
 const AppCtx = createContext<AppState | null>(null);
@@ -245,10 +284,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const titleRef = useRef<string>('');
   const lastUserTextRef = useRef<string>('');
   /** 审批 / 预算询问都排队：群里并行跑时可能同时有好几个要问 */
-  const [pending, setPending] = useState<
-    { name: string; args: any; resolve: (ok: boolean) => void } | null
-  >(null);
-  const approvalQueue = useRef<{ name: string; args: any; resolve: (ok: boolean) => void }[]>([]);
+  const [pending, setPending] = useState<{
+    name: string;
+    args: any;
+    agentId: string;
+    noAlways?: boolean;
+    resolve: (ok: boolean) => void;
+  } | null>(null);
+  const approvalQueue = useRef<
+    {
+      name: string;
+      args: any;
+      agentId: string;
+      noAlways?: boolean;
+      resolve: (ok: boolean) => void;
+    }[]
+  >([]);
   const [pendingCount, setPendingCount] = useState(0);
   const [budgetAsk, setBudgetAsk] = useState<
     { used: number; budget: number; resolve: (extra: number) => void } | null
@@ -263,6 +314,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [speakingIds, setSpeakingIds] = useState<string[]>([]);
   /** 这一轮是不是已经提示过「已停止」了（并行时好几个成员会同时被掐断） */
   const stoppedRef = useRef(false);
+  /** 本会话临时允许的工具（`agentId:tool`），App 重启就没了 */
+  const sessionAllowsRef = useRef<Set<string>>(new Set());
+  const [sessionAllows, setSessionAllows] = useState<string[]>([]);
+  const [bg, setBg] = useState<{ available: boolean; registered: boolean }>({
+    available: false,
+    registered: false,
+  });
+  const [runs, setRuns] = useState<RunLog[]>([]);
+  const [credentials, setCredentials] = useState<vault.Credential[]>([]);
 
   const t = useMemo(() => makeT(cfg.lang), [cfg.lang]);
 
@@ -374,21 +434,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   /** 这个助手的接口从哪来：助手自己指定 > 所属分组绑定 > 全局设置 */
-  const providerInfo = useCallback((agent?: store.Agent) => {
-    const g = (agent?.group ?? '').trim() || '未分组';
-    const list = providersRef.current;
-    const own = (agent?.providerId ?? '').trim();
-    if (own) {
-      const p = list.find((x) => x.id === own);
-      if (p) return { provider: p, from: 'agent' as const };
-    }
-    const gid = cfgRef.current.groupProviders?.[g];
-    if (gid) {
-      const p = list.find((x) => x.id === gid);
-      if (p) return { provider: p, from: 'group' as const };
-    }
-    return { from: 'global' as const };
-  }, []);
+  const providerInfo = useCallback(
+    (agent?: store.Agent) => pickProvider(agent, providersRef.current, cfgRef.current),
+    [],
+  );
 
   /**
    * 某助手实际生效的配置：
@@ -396,34 +445,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
    *   模型/地址：助手单独填的 → 供应商的 → 全局的
    */
   const effectiveCfg = useCallback(
-    async (agentId: string): Promise<Config> => {
-      const base = cfgRef.current;
-      const a = agentsRef.current.find((x) => x.id === agentId);
-      const { provider } = providerInfo(a);
-      let key = '';
-      try {
-        const own = await getSecret(`apikey.${agentId}`);
-        if (own) key = own;
-      } catch {
-        // 读不到就往下走
-      }
-      if (!key && provider) {
-        try {
-          const pk = await getSecret(providerSecret(provider.id));
-          if (pk) key = pk;
-        } catch {
-          // 读不到就往下走
-        }
-      }
-      if (!key) key = base.apiKey;
-      return {
-        ...base,
-        apiKey: key,
-        model: a?.model?.trim() || provider?.model?.trim() || base.model,
-        baseUrl: a?.baseUrl?.trim() || provider?.baseUrl?.trim() || base.baseUrl,
-      };
-    },
-    [providerInfo],
+    async (agentId: string): Promise<Config> =>
+      resolveAgentCfg(
+        cfgRef.current,
+        agentsRef.current.find((x) => x.id === agentId),
+        providersRef.current,
+      ),
+    [],
   );
 
   /** 这个助手到底有没有可用的 Key（自己的 / 供应商的 / 全局的） */
@@ -437,43 +465,143 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [agentHasKey, providerInfo, providerKeyMap],
   );
 
-  /**
-   * 工具审批：开了自动复核就先让便宜模型判断
-   * allow → 直接放行；deny → 直接拒绝；ask / 复核失败 → 弹卡片问用户
-   */
-  const approve = useCallback(
-    async (name: string, args: any): Promise<boolean> => {
-      const c = cfgRef.current;
-      if (c.reviewEnabled) {
-        try {
-          const v = await reviewToolCall(await effectiveCfg(agentRef.current), {
-            name,
-            args,
-            userText: lastUserTextRef.current,
-          });
-          push('system', tRef.current('review.verdict', { v: v.verdict, why: v.reason }));
-          if (v.verdict === 'allow') return true;
-          if (v.verdict === 'deny') return false;
-        } catch (e: any) {
-          push('system', tRef.current('review.failed', { e: String(e?.message ?? e) }));
-        }
-      }
-      return new Promise<boolean>((resolve) => {
-        approvalQueue.current.push({ name, args, resolve });
-        setPending(approvalQueue.current[0]);
-        setPendingCount(approvalQueue.current.length);
-      });
+  /** 写一条永久权限规则（decision = null 表示删掉这条） */
+  const savePermRule = useCallback(
+    async (agentId: string, tool: string, decision: 'allow' | 'deny' | null) => {
+      const rules = { ...(cfgRef.current.permRules ?? {}) };
+      const forAgent = { ...(rules[agentId] ?? {}) };
+      if (decision) forAgent[tool] = decision;
+      else delete forAgent[tool];
+      if (Object.keys(forAgent).length) rules[agentId] = forAgent;
+      else delete rules[agentId];
+      const next = { ...cfgRef.current, permRules: rules };
+      await saveConfig(next);
+      setCfg(next);
     },
-    [effectiveCfg, push],
+    [],
   );
 
-  /** 用户点了允许/拒绝：出队一个，接着显示下一个（并行跑时可能排着队） */
-  const resolvePending = useCallback((ok: boolean) => {
-    const cur = approvalQueue.current.shift();
-    cur?.resolve(ok);
-    setPending(approvalQueue.current[0] ?? null);
-    setPendingCount(approvalQueue.current.length);
+  /** 这个助手 + 这个工具，有没有永久规则 */
+  const ruleFor = useCallback((agentId: string, tool: string): 'allow' | 'deny' | null => {
+    const rules = cfgRef.current.permRules ?? {};
+    return rules[agentId]?.[tool] ?? rules['*']?.[tool] ?? null;
   }, []);
+
+  /**
+   * 工具审批（每个助手一份，并行跑群协作时才知道是谁在申请）：
+   *   永久规则 → 本会话允许 → 自动复核 → 弹卡片（这次 / 本会话 / 永久 / 拒绝）
+   */
+  const makeApprove = useCallback(
+    (agentId: string) =>
+      async (name: string, args: any): Promise<boolean> => {
+        const rule = ruleFor(agentId, name);
+        if (rule === 'allow') return true;
+        if (rule === 'deny') return false;
+        if (sessionAllowsRef.current.has(`${agentId}:${name}`)) return true;
+
+        const c = cfgRef.current;
+        if (c.reviewEnabled) {
+          try {
+            const v = await reviewToolCall(await effectiveCfg(agentId), {
+              name,
+              args,
+              userText: lastUserTextRef.current,
+            });
+            push('system', tRef.current('review.verdict', { v: v.verdict, why: v.reason }));
+            if (v.verdict === 'allow') return true;
+            if (v.verdict === 'deny') return false;
+          } catch (e: any) {
+            push('system', tRef.current('review.failed', { e: String(e?.message ?? e) }));
+          }
+        }
+        // 凭据这类工具每次都问，不给「永久允许」
+        const noAlways = !!TOOLS.find((x) => x.name === name)?.alwaysAsk;
+        return new Promise<boolean>((resolve) => {
+          approvalQueue.current.push({ name, args, agentId, noAlways, resolve });
+          setPending(approvalQueue.current[0]);
+          setPendingCount(approvalQueue.current.length);
+        });
+      },
+    [effectiveCfg, push, ruleFor],
+  );
+
+  /**
+   * 用户对审批卡做了选择：出队一个，接着显示下一个（并行跑时可能排着队）
+   *   once = 只这次；session = 本会话都允许；always = 写永久规则；deny = 拒绝
+   */
+  const resolvePending = useCallback(
+    (decision: 'once' | 'session' | 'always' | 'deny') => {
+      const cur = approvalQueue.current.shift();
+      if (cur) {
+        if (decision === 'session') {
+          sessionAllowsRef.current.add(`${cur.agentId}:${cur.name}`);
+          setSessionAllows([...sessionAllowsRef.current]);
+        }
+        if (decision === 'always') void savePermRule(cur.agentId, cur.name, 'allow');
+        cur.resolve(decision !== 'deny');
+      }
+      setPending(approvalQueue.current[0] ?? null);
+      setPendingCount(approvalQueue.current.length);
+    },
+    [savePermRule],
+  );
+
+  const clearSessionAllows = useCallback(() => {
+    sessionAllowsRef.current.clear();
+    setSessionAllows([]);
+  }, []);
+
+  /* ---------- 运行日志 / 凭据库 / 后台常驻 ---------- */
+
+  const reloadRuns = useCallback(async () => {
+    setRuns(await runsStore.listRuns());
+  }, []);
+  const clearRuns = useCallback(async () => {
+    await runsStore.clearRuns();
+    setRuns([]);
+  }, []);
+
+  const reloadCredentials = useCallback(async () => {
+    setCredentials(await vault.listCredentials());
+  }, []);
+
+  const saveCredential = useCallback(
+    async (input: { id?: string; name: string; label?: string; value?: string }) => {
+      const c = await vault.upsertCredential(input);
+      await reloadCredentials();
+      return c;
+    },
+    [reloadCredentials],
+  );
+
+  const deleteCredential = useCallback(
+    async (id: string) => {
+      await vault.removeCredential(id);
+      await reloadCredentials();
+    },
+    [reloadCredentials],
+  );
+
+  const refreshBackground = useCallback(async () => {
+    try {
+      setBg(await backgroundStatus());
+    } catch {
+      setBg({ available: false, registered: false });
+    }
+  }, []);
+
+  const toggleBackground = useCallback(
+    async (on: boolean) => {
+      try {
+        if (on) await enableBackgroundRoutines(15);
+        else await disableBackgroundRoutines();
+      } catch (e: any) {
+        push('system', tRef.current('bg.failed', { e: String(e?.message ?? e) }));
+      }
+      await refreshBackground();
+    },
+    [push, refreshBackground],
+  );
 
   /** 问用户要不要继续加预算（并行时排队） */
   const askBudget = useCallback(
@@ -556,10 +684,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           break;
         }
         case 'usage':
+          ctx.tokens = e.used;
           setUsage({ used: e.used, budget: e.budget });
           break;
         case 'tool_start':
           ctx.streamId = null;
+          ctx.tools.push({ name: e.name });
           ctx.toolId = push(
             'tool',
             `${e.name}  ${JSON.stringify(e.args).slice(0, 300)}`,
@@ -583,6 +713,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               ),
             );
           }
+          {
+            const last = ctx.tools[ctx.tools.length - 1];
+            if (last) last.ok = ok;
+          }
           ctx.toolId = null;
           break;
         }
@@ -592,6 +726,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           break;
         case 'error':
           ctx.streamId = null;
+          ctx.error = e.message;
           push('error', ctx.speaker ? `${ctx.speaker}：${e.message}` : e.message);
           break;
         case 'done':
@@ -688,8 +823,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         toolId: null,
         text: '',
         bubbleId: null,
+        tools: [],
       };
       addSpeaking(agentId);
+      const startedAt = Date.now();
       const limit = limitFor(agentId);
       let messages: Msg[] = historyRef.current;
       try {
@@ -700,7 +837,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           history: opts.fresh === false ? historyRef.current : initialHistory(c.lang),
           userText: prompt,
           onEvent: makeOnEvent(ctx),
-          approve,
+          approve: makeApprove(agentId),
           signal: opts.signal,
           extraTools: mcpToolSpecs(mcpToolsRef.current),
           runMcpTool: runMcp,
@@ -716,9 +853,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       } finally {
         removeSpeaking(agentId);
       }
+      void addRun({
+        id: newRunId(),
+        at: startedAt,
+        agentId,
+        agentName: a?.name,
+        phase: opts.phase ?? (opts.label ? 'work' : 'single'),
+        model: c.model,
+        provider: providerInfo(a).provider?.name,
+        ms: Date.now() - startedAt,
+        tokens: ctx.tokens,
+        tools: ctx.tools,
+        text: ctx.text.slice(0, 200),
+        error: ctx.error,
+      });
       return { text: ctx.text, bubbleId: ctx.bubbleId, messages };
     },
-    [addSpeaking, approve, askBudget, effectiveCfg, limitFor, makeOnEvent, push, removeSpeaking, runMcp],
+    [
+      addSpeaking,
+      askBudget,
+      effectiveCfg,
+      limitFor,
+      makeApprove,
+      makeOnEvent,
+      providerInfo,
+      push,
+      removeSpeaking,
+      runMcp,
+    ],
   );
 
   /**
@@ -1203,6 +1365,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
       const list = await store.ensureAgents();
       diag('boot', `agents loaded (${list.length})`);
+      await reloadRuns();
+      await reloadCredentials();
+      void refreshBackground();
       const provs = await providerStore.ensureProviders();
       providersRef.current = provs;
       setProviderList(provs);
@@ -1379,6 +1544,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     deleteProvider,
     setGroupProvider,
     setGroupColor,
+    permRules: cfg.permRules ?? {},
+    savePermRule,
+    sessionAllows,
+    clearSessionAllows,
+    runs,
+    reloadRuns,
+    clearRuns,
+    credentials,
+    reloadCredentials,
+    saveCredential,
+    deleteCredential,
+    bg,
+    toggleBackground,
+    refreshBackground,
   };
 
   return (
@@ -1404,9 +1583,9 @@ function ApprovalModal({
   onResolve,
   t,
 }: {
-  pending: { name: string; args: any } | null;
+  pending: { name: string; args: any; agentId: string; noAlways?: boolean } | null;
   count: number;
-  onResolve: (ok: boolean) => void;
+  onResolve: (decision: 'once' | 'session' | 'always' | 'deny') => void;
   t: TFn;
 }) {
   return (
@@ -1424,17 +1603,34 @@ function ApprovalModal({
           <View style={m.row}>
             <TouchableOpacity
               style={[m.btn, { backgroundColor: '#f0f0f3' }]}
-              onPress={() => onResolve(false)}
+              onPress={() => onResolve('deny')}
             >
               <Text style={m.btnTxt}>{t('approval.deny')}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[m.btn, { backgroundColor: '#0a84ff' }]}
-              onPress={() => onResolve(true)}
+              onPress={() => onResolve('once')}
             >
               <Text style={[m.btnTxt, { color: '#fff' }]}>{t('approval.allow')}</Text>
             </TouchableOpacity>
           </View>
+          <View style={m.row}>
+            <TouchableOpacity
+              style={[m.btn, { backgroundColor: '#eef4ff' }]}
+              onPress={() => onResolve('session')}
+            >
+              <Text style={[m.btnTxt, { color: '#0a84ff' }]}>{t('approval.session')}</Text>
+            </TouchableOpacity>
+            {pending?.noAlways ? null : (
+              <TouchableOpacity
+                style={[m.btn, { backgroundColor: '#eef4ff' }]}
+                onPress={() => onResolve('always')}
+              >
+                <Text style={[m.btnTxt, { color: '#0a84ff' }]}>{t('approval.always')}</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+          <Text style={m.note}>{t('approval.note')}</Text>
         </View>
       </View>
     </Modal>
@@ -1600,6 +1796,7 @@ const m = StyleSheet.create({
   title: { fontSize: 16, fontWeight: '700', marginBottom: 6 },
   tool: { fontSize: 15, color: '#0a84ff', marginBottom: 8, fontWeight: '600' },
   args: { fontFamily: 'monospace', fontSize: 12, color: '#333' },
+  note: { fontSize: 11, color: '#999', marginTop: 8, lineHeight: 15 },
   row: { flexDirection: 'row', gap: 10, marginTop: 14 },
   desc: { fontSize: 13, color: '#666', marginBottom: 10, lineHeight: 18 },
   fieldLabel: { fontSize: 13, fontWeight: '600', color: '#333', marginBottom: 6 },
