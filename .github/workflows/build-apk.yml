@@ -1,0 +1,83 @@
+# 在 GitHub 的免费 runner 上打 APK（EAS 免费额度用完后走这条路）
+# 触发：Actions → Build APK → Run workflow（也可以用 scripts 里的 ci_build.py 一键触发）
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: '构建类型'
+        type: choice
+        default: release
+        options: [release, debug]
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: 准备 Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 装依赖
+        run: npm ci --no-audit --no-fund
+
+      - name: 生成原生工程（CNG）
+        run: npx expo prebuild --platform android --no-install
+
+      - name: 只保留 arm64-v8a（手机是 64 位；体积减半、构建更快）
+        run: |
+          sed -i 's/^reactNativeArchitectures=.*/reactNativeArchitectures=arm64-v8a/' android/gradle.properties
+          grep -n '^reactNativeArchitectures' android/gradle.properties
+
+      - name: 注入 release 签名（用仓库 Secrets 里的密钥）
+        if: ${{ inputs.variant == 'release' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          set -e
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::缺少 KEYSTORE_BASE64 secret（签名密钥），无法打 release 包"
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/release.keystore
+          node scripts/apply-release-signing.js android/app/build.gradle
+
+      - name: 编译
+        working-directory: android
+        env:
+          WB_KEYSTORE_PATH: release.keystore
+          WB_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          WB_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          WB_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g
+        run: |
+          if [ "${{ inputs.variant }}" = "release" ]; then
+            ./gradlew assembleRelease --no-daemon --stacktrace
+          else
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          fi
+
+      - name: 收集产物
+        run: |
+          mkdir -p out
+          find android/app/build/outputs/apk -name "*.apk" -exec cp {} out/ \;
+          ls -la out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whalebot-apk
+          path: out/*.apk
+          if-no-files-found: error
