@@ -5,6 +5,9 @@
  */
 import { execTool } from './api';
 import type { Config } from './config';
+import { MAX_ATTACH_BYTES, MAX_INLINE_IMAGES } from './limits';
+
+export { MAX_ATTACH_BYTES, MAX_INLINE_IMAGES };
 
 export type PickedAttachment = {
   id: string;
@@ -19,9 +22,6 @@ export type PickedAttachment = {
   /** 上传到容器后的绝对路径 */
   path?: string;
 };
-
-/** 单个附件上限：base64 内存里要装得下，超过就不传了 */
-export const MAX_ATTACH_BYTES = 12 * 1024 * 1024;
 
 const safeName = (name: string) =>
   (name || 'file')
@@ -52,5 +52,3 @@ export async function uploadAttachment(
   }
 }
 
-/** 预估一下体积，最多给模型 4 张图（多了又慢又贵） */
-export const MAX_INLINE_IMAGES = 4;
