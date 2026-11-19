@@ -13,6 +13,10 @@
 
 </div>
 
+<p align="center">
+  <a href="https://github.com/TOSKA1226/whalebot/releases/latest"><img src="https://img.shields.io/badge/Download%20APK-41%20MB%20%C2%B7%20Android%209%2B-3ddc84?style=for-the-badge&logo=android&logoColor=white" alt="Download APK" /></a>
+</p>
+
 > **English**: whalebot is a personal AI agent that lives on your own Android phone. It talks to any OpenAI-compatible model, drives the phone through an accessibility bridge, and runs shell/Python/file work in a local Linux container. Multi-agent "rooms" let a leader split a task, members work in parallel and report back to you privately, and the leader posts the final summary. No account, no telemetry, your keys stay on your device.
 
 ---
